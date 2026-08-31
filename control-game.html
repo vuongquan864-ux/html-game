@@ -195,6 +195,71 @@ Trải nghiệm AI ngay trong các ứng dụng bạn yêu thích … Dùng Gemi
     .danger{ color: var(--danger); }
     .ok{ color: var(--ok); }
     .hidden{ display:none !important; }
+
+    /* Mobile touch controls: shown only on touch-first devices. */
+    #mobileControls{
+      display:none;
+      position:fixed;
+      inset:0;
+      z-index:20;
+      pointer-events:none;
+      -webkit-user-select:none;
+      user-select:none;
+      touch-action:none;
+    }
+    .touch-pad, .touch-actions, .touch-utilities{
+      position:absolute;
+      pointer-events:auto;
+    }
+    .touch-pad{
+      left:max(14px, env(safe-area-inset-left));
+      bottom:max(18px, env(safe-area-inset-bottom));
+      width:156px; height:156px;
+    }
+    .touch-actions{
+      right:max(14px, env(safe-area-inset-right));
+      bottom:max(18px, env(safe-area-inset-bottom));
+      width:176px; height:176px;
+    }
+    .touch-utilities{
+      right:max(14px, env(safe-area-inset-right));
+      top:max(14px, env(safe-area-inset-top));
+      display:flex; gap:7px;
+    }
+    .touch-btn{
+      position:absolute;
+      width:58px; height:58px;
+      border:1px solid rgba(255,255,255,.28);
+      border-radius:50%;
+      padding:0;
+      display:grid;
+      place-items:center;
+      background:rgba(11,17,35,.72);
+      box-shadow:0 4px 16px rgba(0,0,0,.3);
+      color:#fff;
+      font-size:12px;
+      font-weight:800;
+      touch-action:none;
+      -webkit-tap-highlight-color:transparent;
+    }
+    .touch-btn:active, .touch-btn.is-held{ background:rgba(127,255,212,.36); transform:scale(.94); }
+    .touch-pad .up{ left:49px; top:0; }
+    .touch-pad .left{ left:0; top:49px; }
+    .touch-pad .right{ right:0; top:49px; }
+    .touch-pad .down{ left:49px; bottom:0; }
+    .touch-actions .attack{ width:76px; height:76px; right:0; top:50px; background:rgba(255,77,109,.30); }
+    .touch-actions .heavy{ left:16px; top:0; }
+    .touch-actions .skill{ left:0; bottom:0; background:rgba(127,255,212,.20); }
+    .touch-actions .dash{ right:16px; bottom:0; background:rgba(255,209,102,.18); }
+    .touch-utilities .touch-btn{ position:static; width:42px; height:42px; font-size:11px; }
+    @media (hover:none) and (pointer:coarse){
+      #mobileControls{ display:block; }
+      canvas{ cursor:default; touch-action:none; }
+    }
+    @media (max-width:420px){
+      .touch-pad{ transform:scale(.86); transform-origin:bottom left; }
+      .touch-actions{ transform:scale(.86); transform-origin:bottom right; }
+    }
   </style>
 </head>
 
@@ -219,36 +284,47 @@ Trải nghiệm AI ngay trong các ứng dụng bạn yêu thích … Dùng Gemi
     </div>
 
     <div class="panel" id="controlsPanel">
-      <h1>Controls</h1>
-      <div class="split small">
-        <div>
-          <div><span class="kbd">WASD</span> di chuyển</div>
-          <div><span class="kbd">Shift</span> chạy nhanh (tốn stamina)</div>
-          <div><span class="kbd">Space</span> dash (i-frame giả ~0.18s)</div>
-          <div><span class="kbd">Mouse</span> aim, xoay mặt</div>
-          <div><span class="kbd">LMB</span> combo 3 hit</div>
-          <div><span class="kbd">RMB</span> charge heavy (giữ ≥0.6s)</div>
-        </div>
-        <div>
-          <div><span class="kbd">Q</span> Element Skill</div>
-          <div><span class="kbd">R</span> Burst (cần 100 energy)</div>
-          <div><span class="kbd">F</span> đổi nguyên tố</div>
-          <div><span class="kbd">E</span> tương tác (NPC/rương/waypoint/POI)</div>
-          <div><span class="kbd">M</span> map overlay + click teleport</div>
-          <div><span class="kbd">1</span> potion (+35 HP, CD)</div>
-          <div><span class="kbd">H</span> debug HUD</div>
-          <div><span class="kbd">Esc</span> pause</div>
-        </div>
-      </div>
-      <div class="btns">
-        <button id="btnControlsBack" class="wide">Back</button>
-      </div>
-      <div class="footer">
-        <span class="tag"><b>Reactions</b> SteamBurst / MistPull / MagmaCrack / Sandblade</span>
-        <span class="tag"><b>Shrine</b> chọn Relic bằng <b>1/2/3</b></span>
-      </div>
-    </div>
+  <h1>Controls</h1>
 
+  <!-- Hướng dẫn cho máy tính -->
+  <div class="split small desktop-control-hint">
+    <div>
+      <div><span class="kbd">WASD</span> di chuyển</div>
+      <div><span class="kbd">Shift</span> chạy nhanh</div>
+      <div><span class="kbd">Space</span> dash</div>
+      <div><span class="kbd">Mouse</span> ngắm / xoay mặt</div>
+      <div><span class="kbd">LMB</span> tấn công thường</div>
+      <div><span class="kbd">RMB</span> giữ để đánh mạnh</div>
+    </div>
+    <div>
+      <div><span class="kbd">Q</span> kỹ năng</div>
+      <div><span class="kbd">R</span> Burst</div>
+      <div><span class="kbd">F</span> đổi nguyên tố</div>
+      <div><span class="kbd">E</span> tương tác</div>
+      <div><span class="kbd">M</span> bản đồ</div>
+      <div><span class="kbd">1</span> bình máu</div>
+      <div><span class="kbd">Esc</span> tạm dừng</div>
+    </div>
+  </div>
+
+  <!-- Hướng dẫn cho điện thoại -->
+  <div class="small mobile-control-hint">
+    <div><span class="kbd">▲ ◀ ▼ ▶</span> di chuyển</div>
+    <div><span class="kbd">ĐÁNH</span> tấn công thường</div>
+    <div><span class="kbd">NẶNG</span> giữ để đánh mạnh</div>
+    <div><span class="kbd">SKILL</span> dùng kỹ năng</div>
+    <div><span class="kbd">DASH</span> lướt nhanh</div>
+    <div><span class="kbd">E</span> tương tác</div>
+    <div><span class="kbd">F</span> đổi nguyên tố</div>
+    <div><span class="kbd">HP</span> dùng bình máu</div>
+    <div><span class="kbd">MAP</span> mở bản đồ</div>
+    <div><span class="kbd">Ⅱ</span> tạm dừng</div>
+  </div>
+
+  <div class="btns">
+    <button id="btnControlsBack" class="wide">Back</button>
+  </div>
+</div>
     <div class="panel" id="settingsPanel">
       <h1>Settings</h1>
       <p class="sub">Áp dụng ngay. Volume có hiệu lực sau lần tương tác đầu (policy trình duyệt).</p>
@@ -333,6 +409,28 @@ Trải nghiệm AI ngay trong các ứng dụng bạn yêu thích … Dùng Gemi
       <div class="footer">
         <span class="tag"><b>Seed</b> AETHER-01</span>
         <span class="tag"><b>Relics</b> Shrine cho perk giúp build</span>
+      </div>
+    </div>
+
+    <div id="mobileControls" class="hidden" aria-label="Điều khiển cảm ứng">
+      <div class="touch-utilities">
+        <button class="touch-btn" data-key="KeyE" aria-label="Tương tác">E</button>
+        <button class="touch-btn" data-key="KeyF" aria-label="Đổi nguyên tố">F</button>
+        <button class="touch-btn" data-key="Digit1" aria-label="Dùng bình máu">HP</button>
+        <button class="touch-btn" data-key="KeyM" aria-label="Bản đồ">MAP</button>
+        <button class="touch-btn" data-action="pause" aria-label="Tạm dừng">Ⅱ</button>
+      </div>
+      <div class="touch-pad" aria-label="Di chuyển">
+        <button class="touch-btn up" data-key="KeyW" data-move="0,-1" aria-label="Lên">▲</button>
+        <button class="touch-btn left" data-key="KeyA" data-move="-1,0" aria-label="Trái">◀</button>
+        <button class="touch-btn right" data-key="KeyD" data-move="1,0" aria-label="Phải">▶</button>
+        <button class="touch-btn down" data-key="KeyS" data-move="0,1" aria-label="Xuống">▼</button>
+      </div>
+      <div class="touch-actions" aria-label="Chiến đấu">
+        <button class="touch-btn heavy" data-mouse="right" aria-label="Đòn mạnh">NẶNG</button>
+        <button class="touch-btn attack" data-mouse="left" aria-label="Tấn công">ĐÁNH</button>
+        <button class="touch-btn skill" data-key="KeyQ" aria-label="Kỹ năng">SKILL</button>
+        <button class="touch-btn dash" data-key="Space" aria-label="Lướt">DASH</button>
       </div>
     </div>
   </div>
@@ -508,9 +606,11 @@ Trải nghiệm AI ngay trong các ứng dụng bạn yêu thích … Dùng Gemi
   const vKills = document.getElementById('vKills');
   const vCoins = document.getElementById('vCoins');
   const vCrystals = document.getElementById('vCrystals');
+  const mobileControls = document.getElementById('mobileControls');
 
   function setState(next){
     UI.mapOpen = false;
+    mobileControls.classList.toggle('hidden', next !== 'Playing');
     if (next === 'MainMenu'){ UI.state = next; showPanel('main'); }
     else if (next === 'Playing'){ UI.state = next; hideAllPanels(); }
     else if (next === 'Paused'){ UI.state = next; showPanel('pause'); }
@@ -1244,6 +1344,47 @@ Trải nghiệm AI ngay trong các ứng dụng bạn yêu thích … Dùng Gemi
   // prevent context menu (RMB)
   window.addEventListener('contextmenu', (e)=>e.preventDefault());
 
+  // Touch buttons feed the same input state as keyboard and mouse. This keeps
+  // desktop controls unchanged while allowing several fingers at once on mobile.
+  const mobileInput = { active:false, moveX:0, moveY:0 };
+  document.querySelectorAll('#mobileControls .touch-btn').forEach((btn)=>{
+    let pointerId = null;
+    const release = (e)=>{
+      if (pointerId === null || (e && e.pointerId !== pointerId)) return;
+      const code = btn.dataset.key;
+      if (code) keys.set(code, false);
+      if (btn.dataset.mouse === 'left') mouse.downL = false;
+      if (btn.dataset.mouse === 'right') mouse.downR = false;
+      btn.classList.remove('is-held');
+      pointerId = null;
+      mobileInput.active = false;
+    };
+    btn.addEventListener('pointerdown', (e)=>{
+      e.preventDefault();
+      if (btn.dataset.action === 'pause'){
+        if (UI.state === 'Playing') setState('Paused');
+        else if (UI.state === 'Paused') setState('Playing');
+        return;
+      }
+      pointerId = e.pointerId;
+      btn.setPointerCapture?.(pointerId);
+      const code = btn.dataset.key;
+      if (code) keys.set(code, true);
+      if (btn.dataset.mouse === 'left') mouse.downL = true;
+      if (btn.dataset.mouse === 'right') mouse.downR = true;
+      if (btn.dataset.move){
+        const [x,y] = btn.dataset.move.split(',').map(Number);
+        mobileInput.active = true;
+        mobileInput.moveX = x;
+        mobileInput.moveY = y;
+      }
+      btn.classList.add('is-held');
+    });
+    btn.addEventListener('pointerup', release);
+    btn.addEventListener('pointercancel', release);
+    btn.addEventListener('lostpointercapture', release);
+  });
+
   function keyDown(code){ return !!keys.get(code); }
   function keyPressed(code){ return !!keys.get(code) && !prevKeys.get(code); }
   function mousePressedL(){ return mouse.downL && !mouse.prevL; }
@@ -1255,6 +1396,11 @@ Trải nghiệm AI ngay trong các ứng dụng bạn yêu thích … Dùng Gemi
     for (const [k,v] of keys.entries()) prevKeys.set(k, v);
     mouse.prevL = mouse.downL;
     mouse.prevR = mouse.downR;
+    const moveX = (keyDown('KeyD')?1:0) - (keyDown('KeyA')?1:0);
+    const moveY = (keyDown('KeyS')?1:0) - (keyDown('KeyW')?1:0);
+    mobileInput.active = moveX !== 0 || moveY !== 0;
+    mobileInput.moveX = moveX;
+    mobileInput.moveY = moveY;
   }
 
   // Auto pause on blur/hidden
@@ -2855,6 +3001,13 @@ Trải nghiệm AI ngay trong các ứng dụng bạn yêu thích … Dùng Gemi
       if (d > 0.0001){
         player.faceX = dx/d;
         player.faceY = dy/d;
+      }
+      // Touch players do not have a mouse cursor, so face the direction of
+      // their movement. It also makes dash and melee feel natural on a phone.
+      if (mobileInput.active){
+        const dir = nrm(mobileInput.moveX, mobileInput.moveY);
+        player.faceX = dir.x;
+        player.faceY = dir.y;
       }
     }
 
