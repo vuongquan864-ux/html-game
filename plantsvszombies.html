@@ -1,0 +1,1890 @@
+Trải nghiệm AI ngay trong các ứng dụng bạn yêu thích … Dùng Gemini để tạo bản nháp và tinh chỉnh nội dung, đồng thời sử dụng Gemini Pro để khai thác AI thế hệ mới của Google với giá 489.000 ₫ 122.000 ₫ cho 3 tháng
+100%
+<!DOCTYPE html>
+<html lang="vi">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no">
+<title>Lumenroot Fusion Siege</title>
+<style>
+  html, body { margin:0; width:100%; height:100%; overflow:hidden; background:#0c1422; font-family:system-ui,-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
+  canvas { display:block; width:100vw; height:100vh; background:#0c1422; cursor:default; touch-action:none; }
+  * { box-sizing:border-box; user-select:none; }
+</style>
+</head>
+<body>
+<canvas id="game"></canvas>
+<script>
+/*
+  Lumenroot Fusion Siege - một lane-defense fusion garden game IP mới.
+  Chạy offline trong 1 file: Canvas 2D + CSS + JavaScript thuần, không thư viện ngoài.
+  Phím: 1-9 chọn plant, F chọn fusion, Space pause, R restart, Esc hủy chọn.
+  Kéo plant này lên plant khác hoặc chọn F rồi click plant thứ hai để fusion hợp lệ.
+  Âm thanh procedural được bật sau tương tác đầu tiên do chính sách trình duyệt.
+*/
+(() => {
+'use strict';
+
+const TAU = Math.PI * 2;
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
+const lerp = (a, b, t) => a + (b - a) * t;
+const rand = (a, b) => a + Math.random() * (b - a);
+const randInt = (a, b) => Math.floor(rand(a, b + 1));
+const dist2 = (x1, y1, x2, y2) => {
+  const dx = x1 - x2, dy = y1 - y2;
+  return dx * dx + dy * dy;
+};
+const contains = (r, x, y) => r && x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
+const format = n => Math.floor(n).toString();
+
+function roundRect(ctx, x, y, w, h, r) {
+  r = Math.min(r, w * 0.5, h * 0.5);
+  ctx.beginPath();
+  ctx.moveTo(x + r, y);
+  ctx.arcTo(x + w, y, x + w, y + h, r);
+  ctx.arcTo(x + w, y + h, x, y + h, r);
+  ctx.arcTo(x, y + h, x, y, r);
+  ctx.arcTo(x, y, x + w, y, r);
+  ctx.closePath();
+}
+function strokeRoundRect(ctx, x, y, w, h, r) { roundRect(ctx, x, y, w, h, r); ctx.stroke(); }
+function fillRoundRect(ctx, x, y, w, h, r) { roundRect(ctx, x, y, w, h, r); ctx.fill(); }
+function drawCentered(ctx, text, x, y, size = 16, color = '#fff', weight = 700) {
+  ctx.save();
+  ctx.font = `${weight} ${size}px system-ui,-apple-system,Segoe UI,Roboto,Arial`;
+  ctx.fillStyle = color;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x, y);
+  ctx.restore();
+}
+function drawLeft(ctx, text, x, y, size = 14, color = '#fff', weight = 600) {
+  ctx.save();
+  ctx.font = `${weight} ${size}px system-ui,-apple-system,Segoe UI,Roboto,Arial`;
+  ctx.fillStyle = color;
+  ctx.textAlign = 'left';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x, y);
+  ctx.restore();
+}
+function drawRight(ctx, text, x, y, size = 14, color = '#fff', weight = 600) {
+  ctx.save();
+  ctx.font = `${weight} ${size}px system-ui,-apple-system,Segoe UI,Roboto,Arial`;
+  ctx.fillStyle = color;
+  ctx.textAlign = 'right';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x, y);
+  ctx.restore();
+}
+function shade(hex, pct) {
+  const h = hex.replace('#', '');
+  const n = parseInt(h.length === 3 ? h.split('').map(c => c + c).join('') : h, 16);
+  let r = (n >> 16) & 255, g = (n >> 8) & 255, b = n & 255;
+  r = clamp(Math.round(r + (pct > 0 ? (255 - r) : r) * pct), 0, 255);
+  g = clamp(Math.round(g + (pct > 0 ? (255 - g) : g) * pct), 0, 255);
+  b = clamp(Math.round(b + (pct > 0 ? (255 - b) : b) * pct), 0, 255);
+  return `rgb(${r},${g},${b})`;
+}
+
+const GRID = { rows: 5, cols: 9 };
+const BALANCE = {
+  initialLumen: 175,
+  envDropInterval: 8.2,
+  envDropValue: 25,
+  maxResourceDrops: 24,
+  plantRefundRate: 0.45,
+  betweenWaves: 8,
+  firstWaveDelay: 5,
+  enemyBaseDamageToGate: 1,
+  laneSaverDamage: 99999,
+  maxParticles: 950,
+  maxProjectiles: 260,
+  defaultSpeed: 1,
+  fusionFlashTime: 0.55,
+  baseVolume: 0.45
+};
+
+const PLANT_DEFS = {
+  glow: {
+    id: 'glow', name: 'Đèn Mầm', short: 'Đèn', role: 'Tạo Lumen', cost: 50, cooldown: 5.5, hp: 120,
+    damage: 0, attackRate: 0, range: 0, resourceInterval: 12, resourceValue: 25,
+    desc: 'Tạo Lumen định kỳ. Rẻ, cần bảo vệ.',
+    visual: { shape:'pod', c1:'#ffd84a', c2:'#57d17a', glow:'#ffe66d', icon:'✦' }
+  },
+  bloom: {
+    id: 'bloom', name: 'Giếng Hoa', short: 'Giếng', role: 'Tạo Lumen+', cost: 75, cooldown: 9, hp: 150,
+    damage: 0, attackRate: 0, range: 0, resourceInterval: 20, resourceValue: 60,
+    desc: 'Tạo lượng Lumen lớn nhưng nhịp chậm.',
+    visual: { shape:'well', c1:'#f8b7ff', c2:'#72e1ff', glow:'#ffccff', icon:'◌' }
+  },
+  pebble: {
+    id: 'pebble', name: 'Hạt Phóng', short: 'Hạt', role: 'Bắn cơ bản', cost: 100, cooldown: 7, hp: 155,
+    damage: 25, attackRate: 0.82, range: 8, attackType:'projectile', projectileSpeed: 360,
+    desc: 'Bắn một hạt năng lượng ổn định theo lane.',
+    visual: { shape:'shooter', c1:'#78d95f', c2:'#f2e36b', shot:'#b7ff6a', icon:'●' }
+  },
+  prism: {
+    id: 'prism', name: 'Sậy Lăng Kính', short: 'Sậy', role: 'Bắn nhanh', cost: 125, cooldown: 8.5, hp: 135,
+    damage: 10, attackRate: 1.85, range: 8, attackType:'beam', pierce: 1,
+    desc: 'Bắn tia nhỏ rất nhanh. Tốt khi cần dọn địch yếu.',
+    visual: { shape:'reed', c1:'#49d6ff', c2:'#f3f0ff', shot:'#77efff', icon:'|' }
+  },
+  shell: {
+    id: 'shell', name: 'Vỏ Gỗ', short: 'Vỏ', role: 'Chắn đường', cost: 75, cooldown: 13, hp: 560,
+    damage: 0, attackRate: 0, range: 0, armor: 2,
+    desc: 'Tường sống nhiều máu. Câu giờ cho tuyến sau.',
+    visual: { shape:'tank', c1:'#9b6b3b', c2:'#5cbf68', glow:'#b98b58', icon:'▣' }
+  },
+  pollen: {
+    id: 'pollen', name: 'Bom Phấn', short: 'Bom', role: 'AoE', cost: 150, cooldown: 14, hp: 125,
+    damage: 48, attackRate: 0.42, range: 7, attackType:'bomb', projectileSpeed: 240, splash: 72,
+    desc: 'Ném bom phấn gây sát thương lan.',
+    visual: { shape:'bomb', c1:'#ffb02e', c2:'#d64d62', shot:'#ffce55', icon:'✹' }
+  },
+  frost: {
+    id: 'frost', name: 'Rêu Lạnh', short: 'Rêu', role: 'Làm chậm', cost: 125, cooldown: 10, hp: 140,
+    damage: 12, attackRate: 0.82, range: 7, attackType:'projectile', projectileSpeed: 310, slow: 0.48, slowDuration: 2.6,
+    desc: 'Bắn bào tử lạnh làm chậm mục tiêu.',
+    visual: { shape:'moss', c1:'#9cf1ff', c2:'#4aa3ff', shot:'#b7f7ff', icon:'❄' }
+  },
+  thorn: {
+    id: 'thorn', name: 'Móc Gai', short: 'Gai', role: 'Cận chiến', cost: 110, cooldown: 9.5, hp: 230,
+    damage: 38, attackRate: 1.05, range: 1.25, attackType:'melee', bleed: 5, bleedDuration: 3,
+    desc: 'Đánh gần, gây chảy nhựa độc theo thời gian.',
+    visual: { shape:'thorn', c1:'#51d66d', c2:'#243d2f', shot:'#8cff8a', icon:'⌁' }
+  },
+  pulse: {
+    id: 'pulse', name: 'Nhịp Lá', short: 'Nhịp', role: 'Hỗ trợ', cost: 90, cooldown: 10.5, hp: 135,
+    damage: 0, attackRate: 0, range: 0, auraAttack: 0.24, auraRadius: 1.35,
+    desc: 'Tăng tốc độ bắn cho plant gần kề.',
+    visual: { shape:'pulse', c1:'#b3ff5b', c2:'#31cfa1', glow:'#cbff72', icon:'≋' }
+  }
+};
+
+const FUSION_DEFS = [
+  {
+    id:'fusion_glow_pebble', a:'glow', b:'pebble', result:'lumenspike', cost:45,
+    name:'Đèn Gai', note:'DPS + tài nguyên', behavior:'Bắn gai sáng; mỗi lần trúng trả lại một ít Lumen.',
+    unit:{ id:'lumenspike', name:'Đèn Gai', short:'ĐènGai', role:'Bắn + Lumen', cost:0, cooldown:0, hp:210,
+      damage:26, attackRate:0.95, range:8, attackType:'projectile', projectileSpeed:380, resourceOnHit:3,
+      desc:'Hạt bắn tạo Lumen nhỏ khi trúng địch.', visual:{shape:'shooterPod', c1:'#ffe36a', c2:'#49d66c', shot:'#f6ff77', glow:'#fff0a2', fusion:true, icon:'✦●'} }
+  },
+  {
+    id:'fusion_glow_prism', a:'glow', b:'prism', result:'raygarden', cost:55,
+    name:'Vườn Tia', note:'Tạo Lumen + tia nhanh', behavior:'Vừa sinh Lumen vừa phóng tia lăng kính chính xác.',
+    unit:{ id:'raygarden', name:'Vườn Tia', short:'VườnTia', role:'Tia + Lumen', cost:0, cooldown:0, hp:200,
+      damage:12, attackRate:1.55, range:8, attackType:'beam', pierce:1, resourceInterval:15, resourceValue:25,
+      desc:'Nguồn Lumen biết bắn tia.', visual:{shape:'reedPod', c1:'#ffe36a', c2:'#5de8ff', shot:'#95f7ff', glow:'#f9ffad', fusion:true, icon:'✦|'} }
+  },
+  {
+    id:'fusion_pebble_prism', a:'pebble', b:'prism', result:'twinreed', cost:60,
+    name:'Song Sậy', note:'Hai nòng xuyên nhẹ', behavior:'Bắn hai luồng hạt mảnh; xuyên qua mục tiêu đầu.',
+    unit:{ id:'twinreed', name:'Song Sậy', short:'Song', role:'DPS xuyên', cost:0, cooldown:0, hp:190,
+      damage:18, attackRate:1.18, range:8, attackType:'double', projectileSpeed:420, pierce:1,
+      desc:'Hai viên đạn mỗi nhịp, có xuyên.', visual:{shape:'twin', c1:'#68e2ff', c2:'#a8f06a', shot:'#bafff4', glow:'#bffcff', fusion:true, icon:'●|'} }
+  },
+  {
+    id:'fusion_pebble_frost', a:'pebble', b:'frost', result:'crystalshot', cost:50,
+    name:'Hạt Băng', note:'DPS + slow', behavior:'Đạn kết tinh gây sát thương vừa và làm chậm lâu.',
+    unit:{ id:'crystalshot', name:'Hạt Băng', short:'HạtBăng', role:'Bắn chậm', cost:0, cooldown:0, hp:190,
+      damage:25, attackRate:0.9, range:8, attackType:'projectile', projectileSpeed:340, slow:0.42, slowDuration:3.5,
+      desc:'Đạn lạnh giữ địch trong tầm bắn lâu hơn.', visual:{shape:'iceShooter', c1:'#a9f6ff', c2:'#78dc62', shot:'#d5ffff', glow:'#b7f7ff', fusion:true, icon:'●❄'} }
+  },
+  {
+    id:'fusion_shell_pollen', a:'shell', b:'pollen', result:'bombbark', cost:75,
+    name:'Pháo Vỏ', note:'Tank + nổ phản kích', behavior:'Vỏ cứng phát nổ nhỏ khi bị cắn và ném bom ngắn tầm.',
+    unit:{ id:'bombbark', name:'Pháo Vỏ', short:'PháoVỏ', role:'Tank AoE', cost:0, cooldown:0, hp:680, armor:3,
+      damage:38, attackRate:0.52, range:5, attackType:'bomb', projectileSpeed:220, splash:64, onBiteSplash:24, onBiteCooldown:0.55,
+      desc:'Chặn đường và trừng phạt địch tụ lại.', visual:{shape:'bombTank', c1:'#a06a3c', c2:'#ffb23f', shot:'#ffc65a', glow:'#ffae5a', fusion:true, icon:'▣✹'} }
+  },
+  {
+    id:'fusion_pollen_frost', a:'pollen', b:'frost', result:'hailburst', cost:70,
+    name:'Mưa Băng', note:'AoE + khống chế', behavior:'Bom vỡ thành sương lạnh, gây slow diện rộng.',
+    unit:{ id:'hailburst', name:'Mưa Băng', short:'MưaBăng', role:'AoE slow', cost:0, cooldown:0, hp:170,
+      damage:42, attackRate:0.46, range:7, attackType:'bomb', projectileSpeed:230, splash:86, slow:0.38, slowDuration:3.2, freezeChance:0.14,
+      desc:'Giải pháp khi một lane bị dồn đông.', visual:{shape:'iceBomb', c1:'#baf7ff', c2:'#ffb847', shot:'#e9ffff', glow:'#aef4ff', fusion:true, icon:'✹❄'} }
+  },
+  {
+    id:'fusion_glow_shell', a:'glow', b:'shell', result:'batterybark', cost:60,
+    name:'Pin Vỏ', note:'Tank + tài nguyên', behavior:'Chống chịu và tạo Lumen khi bị tấn công.',
+    unit:{ id:'batterybark', name:'Pin Vỏ', short:'PinVỏ', role:'Tank Lumen', cost:0, cooldown:0, hp:650, armor:4,
+      damage:0, attackRate:0, range:0, resourceInterval:22, resourceValue:25, onBiteResource:4, damageReduction:0.1,
+      desc:'Biến áp lực lane thành tài nguyên.', visual:{shape:'batteryTank', c1:'#8c6437', c2:'#ffdf54', glow:'#fff173', fusion:true, icon:'▣✦'} }
+  },
+  {
+    id:'fusion_thorn_pebble', a:'thorn', b:'pebble', result:'thornbow', cost:55,
+    name:'Nỏ Gai', note:'Melee + ranged bleed', behavior:'Phóng gai dài gây chảy nhựa độc, đồng thời vẫn đánh gần.',
+    unit:{ id:'thornbow', name:'Nỏ Gai', short:'NỏGai', role:'Bleed ranged', cost:0, cooldown:0, hp:260,
+      damage:34, attackRate:0.92, range:7, attackType:'projectile', projectileSpeed:390, bleed:7, bleedDuration:4.2, meleeRetaliate:18,
+      desc:'Sát thương ổn định vào địch trâu máu.', visual:{shape:'bowThorn', c1:'#56d96e', c2:'#2c2b39', shot:'#91ff86', glow:'#8dff96', fusion:true, icon:'⌁●'} }
+  },
+  {
+    id:'fusion_thorn_shell', a:'thorn', b:'shell', result:'bramblegate', cost:65,
+    name:'Cổng Bụi Gai', note:'Tank + trói chân', behavior:'Tạo hàng gai bắt dính địch đang cắn và chém vùng gần.',
+    unit:{ id:'bramblegate', name:'Cổng Bụi Gai', short:'BụiGai', role:'Tank snare', cost:0, cooldown:0, hp:760, armor:3,
+      damage:32, attackRate:0.85, range:1.55, attackType:'melee', slow:0.36, slowDuration:2.1, onBiteSlow:0.42, onBiteCooldown:0.4,
+      desc:'Bức tường sống kiêm bẫy làm chậm.', visual:{shape:'brambleTank', c1:'#3dc565', c2:'#6d4b2a', shot:'#9cff74', glow:'#98ff81', fusion:true, icon:'⌁▣'} }
+  },
+  {
+    id:'fusion_bloom_pollen', a:'bloom', b:'pollen', result:'nectarmortar', cost:80,
+    name:'Cối Mật', note:'Kinh tế + pháo AoE', behavior:'Giếng hoa lên men thành pháo mật dính, nổ lan và sinh Lumen.',
+    unit:{ id:'nectarmortar', name:'Cối Mật', short:'CốiMật', role:'AoE + Lumen', cost:0, cooldown:0, hp:210,
+      damage:54, attackRate:0.42, range:8, attackType:'bomb', projectileSpeed:220, splash:80, slow:0.78, slowDuration:1.6, resourceInterval:20, resourceValue:35,
+      desc:'Một ô hậu tuyến rất giá trị ở mid-game.', visual:{shape:'mortarWell', c1:'#ffb44f', c2:'#ee9dff', shot:'#ffd36c', glow:'#ffdda0', fusion:true, icon:'◌✹'} }
+  },
+  {
+    id:'fusion_bloom_frost', a:'bloom', b:'frost', result:'mistwell', cost:65,
+    name:'Giếng Sương', note:'Kinh tế + slow pulse', behavior:'Tạo Lumen và phát xung sương làm chậm toàn lane.',
+    unit:{ id:'mistwell', name:'Giếng Sương', short:'GiếngSương', role:'Lumen slow', cost:0, cooldown:0, hp:220,
+      damage:10, attackRate:0.32, range:8, attackType:'pulseLane', pulseInterval:4.6, pulseDamage:16, slow:0.44, slowDuration:2.7, resourceInterval:18, resourceValue:35,
+      desc:'Ổn định kinh tế, khống chế các wave chạy nhanh.', visual:{shape:'mistWell', c1:'#b8f8ff', c2:'#e8a7ff', shot:'#d9ffff', glow:'#cbfbff', fusion:true, icon:'◌❄'} }
+  },
+  {
+    id:'fusion_pulse_prism', a:'pulse', b:'prism', result:'rhythmlens', cost:60,
+    name:'Nhạc Quang', note:'Utility + beam', behavior:'Bắn tia nhịp và tăng tốc độ bắn cho cả lane gần nó.',
+    unit:{ id:'rhythmlens', name:'Nhạc Quang', short:'Nhạc', role:'Beam support', cost:0, cooldown:0, hp:190,
+      damage:14, attackRate:1.35, range:8, attackType:'beam', pierce:2, auraAttack:0.18, auraRadius:2.25,
+      desc:'Hỗ trợ đội hình dày đặc bằng nhịp quang.', visual:{shape:'rhythmLens', c1:'#bcff5b', c2:'#61e8ff', shot:'#eaff84', glow:'#d7ff7d', fusion:true, icon:'≋|'} }
+  }
+];
+
+const FUSION_UNITS = {};
+for (const f of FUSION_DEFS) FUSION_UNITS[f.result] = f.unit;
+const ALL_UNIT_DEFS = { ...PLANT_DEFS, ...FUSION_UNITS };
+const CARD_IDS = Object.keys(PLANT_DEFS);
+
+const ENEMY_DEFS = {
+  mite: { id:'mite', name:'Bọ Bụi', hp:95, speed:22, damage:16, attackRate:0.95, value:4, size:0.85, desc:'Cơ bản', visual:{shape:'mite', c1:'#a8876f', c2:'#5b4035'} },
+  skitter: { id:'skitter', name:'Kẻ Vụt', hp:70, speed:43, damage:12, attackRate:1.15, value:4, size:0.72, desc:'Nhanh', visual:{shape:'skitter', c1:'#f2b35d', c2:'#8c4a33'} },
+  shellgrub: { id:'shellgrub', name:'Ấu Trùng Mai', hp:190, speed:16, damage:20, attackRate:0.85, armor:6, value:7, size:1.0, desc:'Giáp cứng', visual:{shape:'shell', c1:'#87917a', c2:'#4c564a'} },
+  brute: { id:'brute', name:'Ốc Cọc', hp:440, speed:11, damage:32, attackRate:0.72, armor:3, value:12, size:1.18, desc:'Trâu máu', visual:{shape:'brute', c1:'#7b6b55', c2:'#3e332a'} },
+  shard: { id:'shard', name:'Lưng Mảnh', hp:170, speed:20, damage:20, attackRate:0.9, projectileResist:0.42, value:8, size:0.96, desc:'Kháng projectile', visual:{shape:'shard', c1:'#a7b8c7', c2:'#40596c'} },
+  spitter: { id:'spitter', name:'Ném Bào Tử', hp:135, speed:18, damage:18, attackRate:0.62, ranged: true, range:2.8, value:8, size:0.95, desc:'Tầm xa', visual:{shape:'spitter', c1:'#9f7bd8', c2:'#513a75'} },
+  breaker: { id:'breaker', name:'Đục Cổng', hp:270, speed:17, damage:26, attackRate:0.75, armor:4, plantDamageMult:2.1, value:10, size:1.04, desc:'Phá tank', visual:{shape:'breaker', c1:'#d06d48', c2:'#60342c'} },
+  hopper: { id:'hopper', name:'Lượn Rãnh', hp:125, speed:31, damage:17, attackRate:0.95, jumper:true, value:8, size:0.84, desc:'Nhảy qua plant đầu tiên', visual:{shape:'hopper', c1:'#79c06b', c2:'#304c3a'} },
+  herald: { id:'herald', name:'Kèn Mốc', hp:175, speed:19, damage:12, attackRate:0.8, auraSpeed:1.25, auraRadius:170, value:9, size:0.95, desc:'Tăng tốc đồng minh gần', visual:{shape:'herald', c1:'#e0d266', c2:'#695b31'} },
+  brood: { id:'brood', name:'Ổ Nở', hp:260, speed:13, damage:15, attackRate:0.82, summoner:true, summonInterval:8.5, value:13, size:1.08, desc:'Triệu hồi Bọ Bụi', visual:{shape:'brood', c1:'#d47db5', c2:'#693a60'} },
+  boss: { id:'boss', name:'Thú Khe Nứt', hp:1650, speed:8.5, damage:54, attackRate:0.58, armor:8, plantDamageMult:1.25, auraSpeed:1.12, auraRadius:210, value:50, size:1.52, boss:true, desc:'Mini-boss cuối', visual:{shape:'boss', c1:'#5b4fa3', c2:'#2a214f'} }
+};
+
+const WAVES = [
+  { name:'Rìa bụi động đậy', groups:[{enemy:'mite', count:6, interval:3.4, start:1, lane:'random'}] },
+  { name:'Tiếng chân vụt qua', groups:[{enemy:'mite', count:8, interval:3.0, start:1, lane:'random'}, {enemy:'skitter', count:3, interval:5.5, start:10, lane:'random'}] },
+  { name:'Mai xám xuất hiện', groups:[{enemy:'mite', count:10, interval:2.7, start:0.5, lane:'random'}, {enemy:'shellgrub', count:3, interval:7, start:9, lane:'random'}] },
+  { name:'Hai lane bị ép', big:true, groups:[{enemy:'mite', count:12, interval:2.2, start:1, lane:'random'}, {enemy:'skitter', count:5, interval:4.5, start:6, lane:'random'}, {enemy:'shellgrub', count:3, interval:7, start:16, lane:'random'}] },
+  { name:'Bào tử tầm xa', groups:[{enemy:'mite', count:10, interval:2.5, start:1, lane:'random'}, {enemy:'spitter', count:5, interval:6.2, start:8, lane:'random'}, {enemy:'skitter', count:4, interval:5, start:20, lane:'random'}] },
+  { name:'Đợt lưng mảnh', groups:[{enemy:'shard', count:6, interval:5.4, start:3, lane:'random'}, {enemy:'mite', count:15, interval:2.0, start:1, lane:'random'}, {enemy:'shellgrub', count:4, interval:7, start:17, lane:'random'}] },
+  { name:'Đục cổng thử sức', big:true, groups:[{enemy:'breaker', count:5, interval:7, start:5, lane:'random'}, {enemy:'skitter', count:10, interval:2.4, start:2, lane:'random'}, {enemy:'spitter', count:4, interval:8, start:18, lane:'random'}] },
+  { name:'Lượn qua hàng chắn', groups:[{enemy:'hopper', count:9, interval:4.0, start:2, lane:'random'}, {enemy:'mite', count:16, interval:1.9, start:1, lane:'random'}, {enemy:'shellgrub', count:4, interval:7.5, start:20, lane:'random'}] },
+  { name:'Kèn mốc dẫn đàn', groups:[{enemy:'herald', count:4, interval:10, start:5, lane:'random'}, {enemy:'mite', count:18, interval:1.8, start:1, lane:'random'}, {enemy:'skitter', count:9, interval:3.0, start:12, lane:'random'}, {enemy:'shard', count:5, interval:6, start:23, lane:'random'}] },
+  { name:'Ốc cọc nặng nề', big:true, groups:[{enemy:'brute', count:4, interval:11, start:6, lane:'random'}, {enemy:'breaker', count:5, interval:7, start:12, lane:'random'}, {enemy:'spitter', count:6, interval:6.5, start:3, lane:'random'}, {enemy:'mite', count:16, interval:2.0, start:1, lane:'random'}] },
+  { name:'Ổ nở trong khe nứt', groups:[{enemy:'brood', count:5, interval:10, start:8, lane:'random'}, {enemy:'hopper', count:8, interval:4.5, start:4, lane:'random'}, {enemy:'shellgrub', count:6, interval:6, start:18, lane:'random'}, {enemy:'mite', count:14, interval:1.8, start:1, lane:'random'}] },
+  { name:'Trộn giáp và tốc độ', groups:[{enemy:'shard', count:10, interval:4.5, start:2, lane:'random'}, {enemy:'skitter', count:16, interval:1.9, start:3, lane:'random'}, {enemy:'herald', count:4, interval:12, start:12, lane:'random'}, {enemy:'breaker', count:5, interval:8, start:28, lane:'random'}] },
+  { name:'Áp lực năm lane', big:true, groups:[{enemy:'brute', count:5, interval:9, start:5, lane:'random'}, {enemy:'spitter', count:9, interval:5, start:4, lane:'random'}, {enemy:'hopper', count:10, interval:3.8, start:2, lane:'random'}, {enemy:'brood', count:3, interval:12, start:24, lane:'random'}] },
+  { name:'Khe nứt mở rộng', groups:[{enemy:'herald', count:5, interval:10, start:3, lane:'random'}, {enemy:'breaker', count:8, interval:6, start:8, lane:'random'}, {enemy:'shellgrub', count:10, interval:4.5, start:6, lane:'random'}, {enemy:'shard', count:8, interval:5.5, start:20, lane:'random'}, {enemy:'skitter', count:18, interval:1.7, start:1, lane:'random'}] },
+  { name:'Trước cơn bão', big:true, groups:[{enemy:'brute', count:7, interval:8, start:4, lane:'random'}, {enemy:'brood', count:5, interval:11, start:14, lane:'random'}, {enemy:'spitter', count:10, interval:4.7, start:2, lane:'random'}, {enemy:'hopper', count:12, interval:3.4, start:10, lane:'random'}, {enemy:'breaker', count:7, interval:6.5, start:22, lane:'random'}] },
+  { name:'Thú Khe Nứt', final:true, big:true, groups:[{enemy:'boss', count:1, interval:1, start:16, lane:2}, {enemy:'brute', count:8, interval:7, start:5, lane:'random'}, {enemy:'herald', count:6, interval:9, start:8, lane:'random'}, {enemy:'brood', count:6, interval:10, start:14, lane:'random'}, {enemy:'breaker', count:10, interval:5.5, start:20, lane:'random'}, {enemy:'skitter', count:28, interval:1.55, start:1, lane:'random'}, {enemy:'shard', count:10, interval:5.2, start:24, lane:'random'}] }
+];
+
+function getDef(id) { return ALL_UNIT_DEFS[id]; }
+function getFusionByPair(a, b) {
+  return FUSION_DEFS.find(f => (f.a === a && f.b === b) || (f.a === b && f.b === a));
+}
+
+class AudioSystem {
+  constructor() {
+    this.ctx = null;
+    this.master = null;
+    this.volume = BALANCE.baseVolume;
+    this.muted = false;
+    this.unlocked = false;
+  }
+  ensure() {
+    if (this.ctx) {
+      if (this.ctx.state === 'suspended') this.ctx.resume().catch(() => {});
+      return;
+    }
+    const AC = window.AudioContext || window.webkitAudioContext;
+    if (!AC) return;
+    this.ctx = new AC();
+    this.master = this.ctx.createGain();
+    this.master.gain.value = this.muted ? 0 : this.volume;
+    this.master.connect(this.ctx.destination);
+    this.unlocked = true;
+  }
+  setVolume(v) {
+    this.volume = clamp(v, 0, 1);
+    if (this.master) this.master.gain.setTargetAtTime(this.muted ? 0 : this.volume, this.ctx.currentTime, 0.02);
+  }
+  toggleMute() {
+    this.muted = !this.muted;
+    if (this.master) this.master.gain.setTargetAtTime(this.muted ? 0 : this.volume, this.ctx.currentTime, 0.02);
+  }
+  tone(freq, dur, type='sine', gain=0.16, bend=0) {
+    this.ensure();
+    if (!this.ctx || this.muted) return;
+    const t = this.ctx.currentTime;
+    const osc = this.ctx.createOscillator();
+    const g = this.ctx.createGain();
+    osc.type = type;
+    osc.frequency.setValueAtTime(freq, t);
+    if (bend) osc.frequency.exponentialRampToValueAtTime(Math.max(20, freq * bend), t + dur);
+    g.gain.setValueAtTime(0.0001, t);
+    g.gain.exponentialRampToValueAtTime(gain, t + 0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    osc.connect(g); g.connect(this.master);
+    osc.start(t); osc.stop(t + dur + 0.04);
+  }
+  noise(dur=0.18, gain=0.12, filter=900) {
+    this.ensure();
+    if (!this.ctx || this.muted) return;
+    const len = Math.floor(this.ctx.sampleRate * dur);
+    const buf = this.ctx.createBuffer(1, len, this.ctx.sampleRate);
+    const data = buf.getChannelData(0);
+    for (let i = 0; i < len; i++) data[i] = (Math.random() * 2 - 1) * (1 - i / len);
+    const src = this.ctx.createBufferSource();
+    src.buffer = buf;
+    const f = this.ctx.createBiquadFilter();
+    f.type = 'lowpass'; f.frequency.value = filter;
+    const g = this.ctx.createGain();
+    const t = this.ctx.currentTime;
+    g.gain.setValueAtTime(gain, t);
+    g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
+    src.connect(f); f.connect(g); g.connect(this.master);
+    src.start(t); src.stop(t + dur + 0.03);
+  }
+  play(name) {
+    switch (name) {
+      case 'click': this.tone(460, 0.055, 'triangle', 0.07, 1.12); break;
+      case 'collect': this.tone(740, 0.09, 'sine', 0.10, 1.7); setTimeout(() => this.tone(980, 0.08, 'sine', 0.07, 1.2), 28); break;
+      case 'place': this.tone(210, 0.10, 'triangle', 0.11, 0.78); this.noise(0.07, 0.05, 600); break;
+      case 'fusion': this.tone(440, 0.16, 'sine', 0.14, 1.8); setTimeout(() => this.tone(880, 0.20, 'triangle', 0.11, 1.35), 70); this.noise(0.22, 0.07, 2100); break;
+      case 'shoot': this.tone(520, 0.045, 'square', 0.035, 0.82); break;
+      case 'beam': this.tone(900, 0.05, 'sawtooth', 0.030, 1.22); break;
+      case 'hit': this.noise(0.045, 0.055, 900); break;
+      case 'explosion': this.noise(0.22, 0.18, 520); this.tone(95, 0.16, 'sine', 0.12, 0.55); break;
+      case 'death': this.tone(210, 0.12, 'triangle', 0.08, 0.55); this.noise(0.08, 0.04, 700); break;
+      case 'warning': this.tone(310, 0.18, 'sawtooth', 0.10, 0.86); setTimeout(() => this.tone(260, 0.18, 'sawtooth', 0.08, 0.86), 170); break;
+      case 'victory': [523,659,784,1046].forEach((f,i)=>setTimeout(()=>this.tone(f,0.20,'triangle',0.12,1.05),i*115)); break;
+      case 'defeat': [220,174,130].forEach((f,i)=>setTimeout(()=>this.tone(f,0.28,'sawtooth',0.13,0.8),i*170)); break;
+      case 'invalid': this.tone(140, 0.12, 'square', 0.07, 0.7); break;
+    }
+  }
+}
+
+class Board {
+  constructor(game) { this.game = game; this.x = 0; this.y = 0; this.cell = 72; this.w = 0; this.h = 0; this.sidePanel = true; }
+  layout(w, h) {
+    const side = w >= 1180 ? 282 : 0;
+    this.sidePanel = side > 0;
+    const top = 82, bottom = 128;
+    const maxW = Math.max(520, w - side - 118);
+    const maxH = Math.max(300, h - top - bottom - 30);
+    this.cell = Math.floor(clamp(Math.min(maxW / GRID.cols, maxH / GRID.rows), 54, 96));
+    this.w = this.cell * GRID.cols;
+    this.h = this.cell * GRID.rows;
+    this.x = Math.round((w - side - this.w) * 0.5 + 24);
+    this.x = clamp(this.x, 78, Math.max(78, w - side - this.w - 22));
+    this.y = Math.round(top + (maxH - this.h) * 0.5);
+    this.y = clamp(this.y, 82, Math.max(82, h - bottom - this.h - 12));
+  }
+  cellCenter(row, col) { return { x:this.x + col * this.cell + this.cell / 2, y:this.y + row * this.cell + this.cell / 2 }; }
+  cellRect(row, col) { return { x:this.x + col*this.cell, y:this.y + row*this.cell, w:this.cell, h:this.cell }; }
+  cellAt(x, y) {
+    const col = Math.floor((x - this.x) / this.cell);
+    const row = Math.floor((y - this.y) / this.cell);
+    if (row < 0 || row >= GRID.rows || col < 0 || col >= GRID.cols) return null;
+    return { row, col };
+  }
+  laneY(row) { return this.y + row*this.cell + this.cell/2; }
+  render(ctx) {
+    const g = this.game;
+    ctx.save();
+    const sky = ctx.createLinearGradient(0, 0, 0, g.h);
+    sky.addColorStop(0, '#182642'); sky.addColorStop(0.48, '#11364b'); sky.addColorStop(1, '#0c1729');
+    ctx.fillStyle = sky; ctx.fillRect(0, 0, g.w, g.h);
+
+    // background organisms
+    ctx.globalAlpha = 0.12;
+    for (let i = 0; i < 22; i++) {
+      const px = (i * 157 + Math.sin(g.time * 0.08 + i) * 18) % (g.w + 80) - 40;
+      const py = 80 + ((i * 79) % Math.max(240, g.h - 230));
+      ctx.fillStyle = i % 2 ? '#92f4ff' : '#d7ff74';
+      ctx.beginPath(); ctx.ellipse(px, py, 2 + (i % 5), 1 + (i % 4), Math.sin(i) * 1.6, 0, TAU); ctx.fill();
+    }
+    ctx.globalAlpha = 1;
+
+    // left gate and right rift zones
+    const gateX = this.x - this.cell * 0.92;
+    const gateY = this.y - 6;
+    const gateW = this.cell * 0.74;
+    const gateH = this.h + 12;
+    const gateGrad = ctx.createLinearGradient(gateX, gateY, gateX + gateW, gateY);
+    gateGrad.addColorStop(0, '#253457'); gateGrad.addColorStop(0.5, '#3b6b8a'); gateGrad.addColorStop(1, '#142238');
+    ctx.fillStyle = gateGrad;
+    fillRoundRect(ctx, gateX, gateY, gateW, gateH, 20);
+    ctx.strokeStyle = '#8deaff'; ctx.lineWidth = 2; ctx.globalAlpha = 0.7; strokeRoundRect(ctx, gateX+5, gateY+5, gateW-10, gateH-10, 15); ctx.globalAlpha = 1;
+    for (let r = 0; r < GRID.rows; r++) {
+      const y = this.laneY(r);
+      const active = g.laneSavers[r];
+      ctx.fillStyle = active ? '#89f8ff' : '#475264';
+      ctx.globalAlpha = active ? 0.9 : 0.35;
+      ctx.beginPath(); ctx.moveTo(gateX + gateW*0.48, y - 13); ctx.lineTo(gateX + gateW*0.77, y); ctx.lineTo(gateX + gateW*0.48, y + 13); ctx.lineTo(gateX + gateW*0.20, y); ctx.closePath(); ctx.fill();
+      ctx.globalAlpha = 1;
+    }
+    drawCentered(ctx, 'CỔNG', gateX + gateW/2, gateY - 15, 12, '#b5f7ff', 800);
+
+    const riftX = this.x + this.w + 8;
+    const rg = ctx.createRadialGradient(riftX + this.cell*0.38, this.y + this.h/2, 4, riftX + this.cell*0.38, this.y + this.h/2, this.h*0.58);
+    rg.addColorStop(0, 'rgba(141,91,255,0.45)'); rg.addColorStop(0.55, 'rgba(60,50,120,0.18)'); rg.addColorStop(1, 'rgba(30,20,60,0)');
+    ctx.fillStyle = rg; ctx.fillRect(riftX - 20, this.y - 30, this.cell*1.4, this.h + 60);
+    ctx.globalAlpha = 0.8;
+    for (let r=0; r<GRID.rows; r++) {
+      const y = this.laneY(r);
+      ctx.strokeStyle = '#a076ff'; ctx.lineWidth = 2;
+      ctx.beginPath();
+      ctx.ellipse(riftX + 22 + Math.sin(g.time*1.8+r)*4, y, 14, this.cell*0.32, Math.sin(g.time+r), 0, TAU);
+      ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+
+    const bg = ctx.createLinearGradient(this.x, this.y, this.x + this.w, this.y + this.h);
+    bg.addColorStop(0, '#1e694e'); bg.addColorStop(0.52, '#287958'); bg.addColorStop(1, '#1b5c52');
+    ctx.fillStyle = bg;
+    fillRoundRect(ctx, this.x - 8, this.y - 8, this.w + 16, this.h + 16, 22);
+    ctx.shadowColor = 'rgba(0,0,0,0.28)'; ctx.shadowBlur = 18; ctx.shadowOffsetY = 8;
+    ctx.fillStyle = 'rgba(0,0,0,0.13)'; fillRoundRect(ctx, this.x - 4, this.y - 4, this.w + 8, this.h + 8, 18);
+    ctx.shadowColor = 'transparent';
+
+    for (let r = 0; r < GRID.rows; r++) {
+      for (let c = 0; c < GRID.cols; c++) {
+        const x = this.x + c*this.cell, y = this.y + r*this.cell;
+        const alt = (r + c) % 2;
+        const cellGrad = ctx.createLinearGradient(x, y, x, y + this.cell);
+        cellGrad.addColorStop(0, alt ? '#3a9a65' : '#319060');
+        cellGrad.addColorStop(1, alt ? '#28764f' : '#257052');
+        ctx.fillStyle = cellGrad;
+        ctx.fillRect(x, y, this.cell, this.cell);
+        ctx.strokeStyle = 'rgba(190,255,206,0.23)'; ctx.lineWidth = 1;
+        ctx.strokeRect(x + 0.5, y + 0.5, this.cell - 1, this.cell - 1);
+        ctx.globalAlpha = 0.12;
+        ctx.fillStyle = '#e0ff9d';
+        ctx.beginPath();
+        ctx.ellipse(x + this.cell*0.22 + ((r*17+c*9)%11), y + this.cell*0.72, 2.5, 1.2, -0.6, 0, TAU);
+        ctx.ellipse(x + this.cell*0.64, y + this.cell*0.33 + ((r+c)%5), 2.1, 0.9, 0.4, 0, TAU);
+        ctx.fill();
+        ctx.globalAlpha = 1;
+      }
+    }
+
+    // lane stripes
+    ctx.strokeStyle = 'rgba(255,255,255,0.13)'; ctx.lineWidth = 2;
+    for (let r = 1; r < GRID.rows; r++) {
+      const y = this.y + r*this.cell;
+      ctx.beginPath(); ctx.moveTo(this.x, y); ctx.lineTo(this.x + this.w, y); ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+class ParticleSystem {
+  constructor(game) {
+    this.game = game;
+    this.items = [];
+    this.pool = [];
+  }
+  spawn(x, y, opts={}) {
+    const p = this.pool.pop() || {};
+    p.x = x; p.y = y;
+    p.vx = opts.vx ?? rand(-40,40);
+    p.vy = opts.vy ?? rand(-40,40);
+    p.life = opts.life ?? rand(0.35,0.8);
+    p.maxLife = p.life;
+    p.size = opts.size ?? rand(2,6);
+    p.color = opts.color ?? '#fff';
+    p.kind = opts.kind ?? 'dot';
+    p.gravity = opts.gravity ?? 0;
+    p.spin = opts.spin ?? rand(-4,4);
+    p.rot = opts.rot ?? rand(0,TAU);
+    p.text = opts.text || '';
+    p.alpha = opts.alpha ?? 1;
+    this.items.push(p);
+    if (this.items.length > BALANCE.maxParticles) this.pool.push(this.items.shift());
+  }
+  burst(x, y, color, count=12, power=75, opts={}) {
+    for (let i=0;i<count;i++) {
+      const a = rand(0,TAU), s = rand(power*0.25, power);
+      this.spawn(x, y, { color, vx:Math.cos(a)*s, vy:Math.sin(a)*s, life:rand(0.25,0.7), size:rand(2,6), ...opts });
+    }
+  }
+  text(x, y, text, color='#fff', size=15) {
+    this.spawn(x, y, { kind:'text', text, color, vx:rand(-8,8), vy:-45, life:0.95, size, gravity:16 });
+  }
+  update(dt) {
+    const arr = this.items;
+    for (let i=arr.length-1; i>=0; i--) {
+      const p = arr[i];
+      p.life -= dt;
+      p.vy += p.gravity * dt;
+      p.x += p.vx * dt; p.y += p.vy * dt; p.rot += p.spin * dt;
+      if (p.life <= 0) {
+        arr.splice(i,1); this.pool.push(p);
+      }
+    }
+  }
+  render(ctx) {
+    ctx.save();
+    for (const p of this.items) {
+      const t = clamp(p.life / p.maxLife, 0, 1);
+      ctx.globalAlpha = p.alpha * t;
+      if (p.kind === 'text') {
+        ctx.font = `800 ${p.size}px system-ui,-apple-system,Segoe UI,Roboto,Arial`;
+        ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+        ctx.lineWidth = 3; ctx.strokeStyle = 'rgba(0,0,0,0.42)'; ctx.strokeText(p.text, p.x, p.y);
+        ctx.fillStyle = p.color; ctx.fillText(p.text, p.x, p.y);
+      } else if (p.kind === 'ring') {
+        ctx.strokeStyle = p.color; ctx.lineWidth = 2;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.size * (1 + (1-t)*3), 0, TAU); ctx.stroke();
+      } else if (p.kind === 'shard') {
+        ctx.save();
+        ctx.fillStyle = p.color;
+        ctx.translate(p.x, p.y); ctx.rotate(p.rot);
+        ctx.fillRect(-p.size*0.5, -p.size*0.18, p.size, p.size*0.36);
+        ctx.restore();
+      } else {
+        ctx.fillStyle = p.color;
+        ctx.beginPath(); ctx.arc(p.x, p.y, p.size * (0.5 + t*0.5), 0, TAU); ctx.fill();
+      }
+    }
+    ctx.restore();
+  }
+}
+
+class ResourceDrop {
+  constructor(game, x, y, value, falling=false) {
+    this.game = game;
+    this.x = x; this.y = falling ? -20 : y;
+    this.targetY = y;
+    this.value = value;
+    this.life = 12;
+    this.falling = falling;
+    this.phase = rand(0, TAU);
+    this.r = value >= 50 ? 18 : 14;
+    this.collected = false;
+  }
+  update(dt) {
+    this.life -= dt;
+    this.phase += dt * 4;
+    if (this.falling) {
+      this.y = lerp(this.y, this.targetY, 1 - Math.exp(-dt * 2.2));
+      if (Math.abs(this.y - this.targetY) < 2) this.falling = false;
+    } else {
+      this.y += Math.sin(this.phase) * dt * 2.5;
+    }
+    return this.life > 0 && !this.collected;
+  }
+  hit(x, y) { return dist2(x, y, this.x, this.y) <= (this.r + 10) * (this.r + 10); }
+  collect() {
+    if (this.collected) return;
+    this.collected = true;
+    this.game.addLumen(this.value, this.x, this.y);
+    this.game.audio.play('collect');
+    this.game.particles.burst(this.x, this.y, '#ffe86d', 10, 80);
+  }
+  render(ctx) {
+    const pulse = 1 + Math.sin(this.phase) * 0.06;
+    ctx.save();
+    ctx.globalAlpha = clamp(this.life / 1.2, 0, 1);
+    const rg = ctx.createRadialGradient(this.x, this.y, 2, this.x, this.y, this.r * 2.3);
+    rg.addColorStop(0, 'rgba(255,255,196,0.95)');
+    rg.addColorStop(0.45, 'rgba(255,218,70,0.78)');
+    rg.addColorStop(1, 'rgba(255,218,70,0)');
+    ctx.fillStyle = rg;
+    ctx.beginPath(); ctx.arc(this.x, this.y, this.r*2.2*pulse, 0, TAU); ctx.fill();
+    ctx.fillStyle = '#ffe45d'; ctx.strokeStyle = '#fff5a2'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(this.x, this.y, this.r*pulse, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#fff9b9'; ctx.beginPath(); ctx.arc(this.x - this.r*0.28, this.y - this.r*0.32, this.r*0.28, 0, TAU); ctx.fill();
+    drawCentered(ctx, this.value, this.x, this.y + 1, this.r > 15 ? 10 : 9, '#6b4e00', 900);
+    ctx.restore();
+  }
+}
+
+class ResourceSystem {
+  constructor(game) { this.game = game; this.drops = []; this.timer = BALANCE.envDropInterval * 0.6; }
+  reset() { this.drops = []; this.timer = BALANCE.envDropInterval * 0.6; }
+  spawn(x, y, value, falling=false) {
+    if (this.drops.length >= BALANCE.maxResourceDrops) return;
+    this.drops.push(new ResourceDrop(this.game, x, y, value, falling));
+  }
+  spawnEnvironment() {
+    const b = this.game.board;
+    const col = randInt(0, GRID.cols - 1), row = randInt(0, GRID.rows - 1);
+    const c = b.cellCenter(row, col);
+    this.spawn(c.x + rand(-b.cell*0.22, b.cell*0.22), c.y + rand(-b.cell*0.24, b.cell*0.24), BALANCE.envDropValue, true);
+  }
+  update(dt) {
+    this.timer -= dt;
+    if (this.timer <= 0) {
+      this.timer += BALANCE.envDropInterval * rand(0.85, 1.15);
+      this.spawnEnvironment();
+    }
+    for (let i=this.drops.length-1; i>=0; i--) {
+      if (!this.drops[i].update(dt)) this.drops.splice(i,1);
+    }
+  }
+  collectAt(x, y) {
+    for (let i=this.drops.length-1; i>=0; i--) {
+      if (this.drops[i].hit(x, y)) { this.drops[i].collect(); this.drops.splice(i,1); return true; }
+    }
+    return false;
+  }
+  render(ctx) { for (const d of this.drops) d.render(ctx); }
+}
+
+class Projectile {
+  constructor(game) { this.game = game; this.active = false; }
+  reset(opts) {
+    Object.assign(this, opts);
+    this.active = true;
+    this.prevX = this.x;
+    this.baseY = this.y;
+    this.age = 0;
+    this.life = opts.life ?? 4;
+    this.trail = [];
+    return this;
+  }
+  update(dt) {
+    if (!this.active) return false;
+    this.age += dt; this.life -= dt;
+    this.prevX = this.x;
+    this.x += this.vx * dt;
+    this.y += (this.vy || 0) * dt;
+    if (this.kind === 'bomb' && this.targetX != null) {
+      const total = Math.max(1, this.targetX - this.startX);
+      const p = clamp((this.x - this.startX) / total, 0, 1);
+      this.y = this.baseY - Math.sin(p * Math.PI) * this.arc;
+      if (this.x >= this.targetX) { this.explode(this.x, this.baseY); return false; }
+    }
+    if (this.trail.length > 5) this.trail.shift();
+    this.trail.push({x:this.x, y:this.y});
+
+    if (this.x > this.game.board.x + this.game.board.w + 90 || this.life <= 0) { this.active = false; return false; }
+    const enemies = this.game.enemies;
+    const minX = Math.min(this.prevX, this.x) - 8, maxX = Math.max(this.prevX, this.x) + 12;
+    let hit = null;
+    for (const e of enemies) {
+      if (!e.active || e.dead || e.row !== this.row) continue;
+      const ey = e.y;
+      const er = e.radius;
+      if (e.x >= minX - er && e.x <= maxX + er && Math.abs((this.kind === 'bomb' ? this.baseY : this.y) - ey) < er + 12) {
+        if (!hit || e.x < hit.x) hit = e;
+      }
+    }
+    if (hit) {
+      if (this.splash) this.explode(hit.x, hit.y, hit);
+      else {
+        this.game.damageEnemy(hit, this.damage, this.effects, this.source, true);
+        this.game.particles.burst(hit.x - 5, hit.y, this.color || '#fff', 4, 45, {life:0.22});
+        this.game.audio.play('hit');
+        if (this.resourceOnHit) this.game.addLumen(this.resourceOnHit, hit.x, hit.y - 20, true);
+        if (this.pierce && this.pierce > 0) this.pierce -= 1;
+        else { this.active = false; return false; }
+      }
+    }
+    return this.active;
+  }
+  explode(x, y, directHit=null) {
+    this.active = false;
+    this.game.audio.play('explosion');
+    this.game.damageEnemiesInRadius(x, y, this.splash || 64, this.damage, this.effects, this.source);
+    this.game.particles.burst(x, y, this.color || '#ffd15d', 22, 120, {life:0.48});
+    for (let i=0;i<3;i++) this.game.particles.spawn(x, y, {kind:'ring', color:this.color || '#ffd15d', size:14+i*8, life:0.45+i*0.06});
+    this.game.screenShake = Math.max(this.game.screenShake, 4);
+    if (this.resourceOnHit && directHit) this.game.addLumen(this.resourceOnHit, directHit.x, directHit.y - 20, true);
+  }
+  render(ctx) {
+    if (!this.active) return;
+    ctx.save();
+    ctx.lineCap = 'round';
+    for (let i=1;i<this.trail.length;i++) {
+      const a = i / this.trail.length * 0.35;
+      ctx.globalAlpha = a;
+      ctx.strokeStyle = this.color || '#fff'; ctx.lineWidth = Math.max(1, (this.radius || 5) * (i/this.trail.length));
+      ctx.beginPath(); ctx.moveTo(this.trail[i-1].x, this.trail[i-1].y); ctx.lineTo(this.trail[i].x, this.trail[i].y); ctx.stroke();
+    }
+    ctx.globalAlpha = 1;
+    const r = this.radius || (this.kind === 'bomb' ? 10 : 5);
+    const rg = ctx.createRadialGradient(this.x, this.y, 1, this.x, this.y, r*2.2);
+    rg.addColorStop(0, '#ffffff'); rg.addColorStop(0.4, this.color || '#caff7a'); rg.addColorStop(1, 'rgba(255,255,255,0)');
+    ctx.fillStyle = rg; ctx.beginPath(); ctx.arc(this.x, this.y, r*2.2, 0, TAU); ctx.fill();
+    ctx.fillStyle = this.color || '#caff7a'; ctx.strokeStyle = '#f8fff1'; ctx.lineWidth = 1.5;
+    if (this.kind === 'shard') {
+      ctx.translate(this.x, this.y); ctx.rotate(this.age * 7);
+      ctx.beginPath(); ctx.moveTo(r,0); ctx.lineTo(0,r*0.75); ctx.lineTo(-r,0); ctx.lineTo(0,-r*0.75); ctx.closePath(); ctx.fill(); ctx.stroke();
+    } else {
+      ctx.beginPath(); ctx.arc(this.x, this.y, r, 0, TAU); ctx.fill(); ctx.stroke();
+    }
+    ctx.restore();
+  }
+}
+
+class ProjectilePool {
+  constructor(game) { this.game = game; this.items = []; this.pool = []; }
+  reset() { this.items = []; this.pool = []; }
+  spawn(opts) {
+    const p = this.pool.pop() || new Projectile(this.game);
+    p.reset(opts);
+    this.items.push(p);
+    if (this.items.length > BALANCE.maxProjectiles) {
+      const old = this.items.shift(); old.active = false; this.pool.push(old);
+    }
+    return p;
+  }
+  update(dt) {
+    for (let i=this.items.length-1;i>=0;i--) {
+      if (!this.items[i].update(dt)) this.pool.push(this.items.splice(i,1)[0]);
+    }
+  }
+  render(ctx) { for (const p of this.items) p.render(ctx); }
+}
+
+class EnemyProjectile {
+  constructor(game, enemy, plant) {
+    this.game = game; this.row = enemy.row; this.x = enemy.x - 18; this.y = enemy.y - 10;
+    this.vx = -250; this.damage = enemy.def.damage; this.target = plant; this.active = true; this.life = 2.2;
+    this.color = enemy.def.visual.c1;
+  }
+  update(dt) {
+    this.life -= dt; this.x += this.vx * dt;
+    if (this.life <= 0 || this.x < this.game.board.x - 90) return this.active = false;
+    const plants = this.game.plants[this.row];
+    for (let c=0; c<GRID.cols; c++) {
+      const p = plants[c]; if (!p || p.dead) continue;
+      const pc = this.game.board.cellCenter(this.row, c);
+      if (this.x <= pc.x + this.game.board.cell*0.38 && this.x >= pc.x - this.game.board.cell*0.45) {
+        p.takeDamage(this.damage, null);
+        this.game.audio.play('hit');
+        this.game.particles.burst(this.x, this.y, '#caa3ff', 5, 50, {life:0.25});
+        return this.active = false;
+      }
+    }
+    return true;
+  }
+  render(ctx) {
+    ctx.save();
+    ctx.globalAlpha = 0.85;
+    ctx.strokeStyle = '#d9b7ff'; ctx.lineWidth = 3; ctx.lineCap = 'round';
+    ctx.beginPath(); ctx.moveTo(this.x + 12, this.y); ctx.lineTo(this.x - 10, this.y); ctx.stroke();
+    ctx.fillStyle = this.color; ctx.beginPath(); ctx.arc(this.x, this.y, 6, 0, TAU); ctx.fill();
+    ctx.restore();
+  }
+}
+
+class Plant {
+  constructor(game, id, row, col) {
+    this.game = game; this.id = id; this.def = getDef(id); this.baseA = null; this.baseB = null;
+    this.row = row; this.col = col; this.hp = this.def.hp; this.maxHp = this.def.hp;
+    this.attackTimer = rand(0.15, 0.65); this.resourceTimer = this.def.resourceInterval ? rand(3, this.def.resourceInterval) : 0;
+    this.pulseTimer = this.def.pulseInterval ? rand(0.5, this.def.pulseInterval) : 0;
+    this.flash = 0; this.attackAnim = 0; this.biteFxTimer = 0; this.dead = false; this.age = 0;
+    this.fusionFlash = this.def.visual.fusion ? BALANCE.fusionFlashTime : 0;
+  }
+  get x() { return this.game.board.cellCenter(this.row, this.col).x; }
+  get y() { return this.game.board.cellCenter(this.row, this.col).y; }
+  update(dt) {
+    if (this.dead) return;
+    this.age += dt;
+    this.flash = Math.max(0, this.flash - dt);
+    this.attackAnim = Math.max(0, this.attackAnim - dt * 4);
+    this.biteFxTimer = Math.max(0, this.biteFxTimer - dt);
+    this.fusionFlash = Math.max(0, this.fusionFlash - dt);
+    if (this.def.resourceInterval) {
+      this.resourceTimer -= dt;
+      if (this.resourceTimer <= 0) {
+        this.resourceTimer += this.def.resourceInterval * rand(0.94, 1.08);
+        this.game.resourceSystem.spawn(this.x + rand(-12,12), this.y - 28 + rand(-7,7), this.def.resourceValue || 25, false);
+        this.game.particles.burst(this.x, this.y - 20, '#ffe86d', 8, 60, {life:0.35});
+      }
+    }
+    if (this.def.attackType) {
+      if (this.def.attackType === 'pulseLane') {
+        this.pulseTimer -= dt;
+        if (this.pulseTimer <= 0) {
+          this.pulseTimer += this.def.pulseInterval || 4.5;
+          this.firePulseLane();
+        }
+      } else {
+        this.attackTimer -= dt;
+        if (this.attackTimer <= 0) {
+          const mult = this.game.getAttackRateMultiplier(this);
+          const rate = Math.max(0.05, (this.def.attackRate || 1) * mult);
+          this.attackTimer += 1 / rate;
+          this.tryAttack();
+        }
+      }
+    }
+  }
+  tryAttack() {
+    const target = this.game.findTargetInLane(this.row, this.x, this.def.range || 1);
+    if (!target && this.def.attackType !== 'melee') return;
+    switch (this.def.attackType) {
+      case 'projectile': this.fireProjectile(target); break;
+      case 'double': this.fireDouble(target); break;
+      case 'beam': this.fireBeam(target); break;
+      case 'bomb': this.fireBomb(target); break;
+      case 'melee': this.fireMelee(); break;
+    }
+  }
+  buildEffects() {
+    return {
+      slow: this.def.slow || 0, slowDuration: this.def.slowDuration || 0,
+      bleed: this.def.bleed || 0, bleedDuration: this.def.bleedDuration || 0,
+      freezeChance: this.def.freezeChance || 0
+    };
+  }
+  fireProjectile(target) {
+    if (!target) return;
+    this.attackAnim = 1;
+    const speed = this.def.projectileSpeed || 340;
+    const color = this.def.visual.shot || this.def.visual.c1;
+    this.game.projectiles.spawn({
+      x:this.x + this.game.board.cell*0.22, y:this.y - this.game.board.cell*0.08,
+      vx:speed, vy:0, row:this.row, damage:this.def.damage, effects:this.buildEffects(), source:this,
+      color, radius:this.def.visual.fusion ? 7 : 5, kind:this.def.bleed ? 'shard' : 'orb',
+      pierce:this.def.pierce || 0, resourceOnHit:this.def.resourceOnHit || 0
+    });
+    this.game.audio.play('shoot');
+    this.game.particles.burst(this.x + this.game.board.cell*0.25, this.y - 4, color, 5, 45, {life:0.18});
+  }
+  fireDouble(target) {
+    if (!target) return;
+    this.attackAnim = 1;
+    const color = this.def.visual.shot || '#bafff4';
+    for (const off of [-8, 8]) {
+      this.game.projectiles.spawn({
+        x:this.x + this.game.board.cell*0.22, y:this.y + off,
+        vx:this.def.projectileSpeed || 400, row:this.row, damage:this.def.damage, effects:this.buildEffects(), source:this,
+        color, radius:5, kind:'shard', pierce:this.def.pierce || 0
+      });
+    }
+    this.game.audio.play('shoot');
+    this.game.particles.burst(this.x + this.game.board.cell*0.25, this.y, color, 7, 50, {life:0.18});
+  }
+  fireBeam(target) {
+    if (!target) return;
+    this.attackAnim = 1;
+    const color = this.def.visual.shot || '#8ff4ff';
+    let hits = 1 + (this.def.pierce || 0);
+    const enemies = this.game.enemies.filter(e => e.active && !e.dead && e.row === this.row && e.x >= this.x - 5 && e.x <= this.x + (this.def.range || 8) * this.game.board.cell).sort((a,b)=>a.x-b.x);
+    let lastX = target.x;
+    for (const e of enemies) {
+      if (hits <= 0) break;
+      this.game.damageEnemy(e, this.def.damage, this.buildEffects(), this, false);
+      this.game.particles.burst(e.x, e.y, color, 3, 40, {life:0.16});
+      lastX = e.x; hits--;
+    }
+    this.game.beams.push({x1:this.x+18, y1:this.y-5, x2:lastX, y2:this.y-5, color, life:0.10, maxLife:0.10, width:this.def.visual.fusion ? 5 : 3});
+    this.game.audio.play('beam');
+  }
+  fireBomb(target) {
+    if (!target) return;
+    this.attackAnim = 1;
+    const color = this.def.visual.shot || '#ffd15d';
+    const targetX = target.x + rand(-8, 18);
+    this.game.projectiles.spawn({
+      x:this.x + 12, y:this.y - 18, startX:this.x + 12, baseY:this.y - 3,
+      vx:this.def.projectileSpeed || 230, row:this.row, damage:this.def.damage, effects:this.buildEffects(), source:this,
+      targetX, arc:rand(32, 54), color, radius:this.def.visual.fusion ? 10 : 9, kind:'bomb', splash:this.def.splash || 66,
+      resourceOnHit:this.def.resourceOnHit || 0
+    });
+    this.game.audio.play('shoot');
+    this.game.particles.burst(this.x + 12, this.y - 14, color, 6, 55, {life:0.18});
+  }
+  fireMelee() {
+    const rangePx = (this.def.range || 1.2) * this.game.board.cell;
+    let hitAny = false;
+    for (const e of this.game.enemies) {
+      if (!e.active || e.dead || e.row !== this.row) continue;
+      if (e.x >= this.x - this.game.board.cell*0.4 && e.x <= this.x + rangePx) {
+        this.game.damageEnemy(e, this.def.damage, this.buildEffects(), this, false);
+        if (this.def.slow) e.applySlow(this.def.slow, this.def.slowDuration || 2);
+        this.game.particles.burst(e.x, e.y, this.def.visual.shot || '#8cff8a', 8, 70, {life:0.25, kind:'shard'});
+        hitAny = true;
+      }
+    }
+    if (hitAny) { this.attackAnim = 1; this.game.audio.play('hit'); }
+  }
+  firePulseLane() {
+    const color = this.def.visual.shot || '#d9ffff';
+    let hit = false;
+    for (const e of this.game.enemies) {
+      if (!e.active || e.dead || e.row !== this.row) continue;
+      if (e.x >= this.x - 5 && e.x <= this.x + (this.def.range || 8) * this.game.board.cell) {
+        this.game.damageEnemy(e, this.def.pulseDamage || this.def.damage || 10, this.buildEffects(), this, false);
+        hit = true;
+      }
+    }
+    this.game.beams.push({x1:this.x, y1:this.y, x2:this.game.board.x + this.game.board.w + 20, y2:this.y, color, life:0.34, maxLife:0.34, width:14, pulse:true});
+    this.game.particles.spawn(this.x, this.y, {kind:'ring', color, size:24, life:0.55});
+    if (hit) this.game.audio.play('beam');
+  }
+  takeDamage(amount, enemy) {
+    if (this.dead) return;
+    let dmg = amount;
+    if (this.def.armor) dmg = Math.max(1, dmg - this.def.armor);
+    if (this.def.damageReduction) dmg *= (1 - this.def.damageReduction);
+    this.hp -= dmg;
+    this.flash = 0.15;
+    if (enemy) {
+      if (this.def.onBiteSplash && this.biteFxTimer <= 0) {
+        this.biteFxTimer = this.def.onBiteCooldown || 0.55;
+        this.game.damageEnemiesInRadius(this.x, this.y, this.game.board.cell*0.82, this.def.onBiteSplash, this.buildEffects(), this);
+        this.game.particles.burst(this.x, this.y, this.def.visual.shot || '#ffbb55', 12, 90, {life:0.30});
+      }
+      if (this.def.onBiteResource && this.biteFxTimer <= 0.05) this.game.addLumen(this.def.onBiteResource, this.x, this.y - 24, true);
+      if (this.def.onBiteSlow && enemy.applySlow) enemy.applySlow(this.def.onBiteSlow, 1.4);
+      if (this.def.meleeRetaliate) this.game.damageEnemy(enemy, this.def.meleeRetaliate, {bleed:this.def.bleed||0, bleedDuration:this.def.bleedDuration||0}, this, false);
+    }
+    if (this.hp <= 0) this.die();
+  }
+  die() {
+    if (this.dead) return;
+    this.dead = true;
+    this.game.plants[this.row][this.col] = null;
+    this.game.particles.burst(this.x, this.y, this.def.visual.c1, 18, 95, {life:0.5});
+    this.game.audio.play('death');
+    if (this.game.selectedCell && this.game.selectedCell.row === this.row && this.game.selectedCell.col === this.col) this.game.selectedCell = null;
+  }
+  render(ctx) {
+    const c = this.game.board.cellCenter(this.row, this.col);
+    drawPlantShape(ctx, this.def, c.x, c.y, this.game.board.cell, this.age, this.attackAnim, this.flash, this.fusionFlash);
+    if (this.hp < this.maxHp) {
+      const w = this.game.board.cell * 0.58, h = 6;
+      const x = c.x - w/2, y = c.y + this.game.board.cell*0.34;
+      ctx.fillStyle = 'rgba(0,0,0,0.35)'; fillRoundRect(ctx, x, y, w, h, 3);
+      ctx.fillStyle = this.hp / this.maxHp > 0.35 ? '#83ff78' : '#ff6969'; fillRoundRect(ctx, x, y, w * clamp(this.hp/this.maxHp,0,1), h, 3);
+    }
+    if (this.def.auraAttack) {
+      ctx.save();
+      ctx.globalAlpha = 0.12 + Math.sin(this.age*3)*0.03;
+      ctx.strokeStyle = this.def.visual.glow || this.def.visual.c1; ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.arc(c.x, c.y, this.game.board.cell * (this.def.auraRadius || 1.2), 0, TAU); ctx.stroke();
+      ctx.restore();
+    }
+  }
+}
+
+function drawLeaf(ctx, x, y, rx, ry, angle, color) {
+  ctx.save(); ctx.translate(x,y); ctx.rotate(angle); ctx.fillStyle = color;
+  ctx.beginPath(); ctx.ellipse(0, 0, rx, ry, 0, 0, TAU); ctx.fill();
+  ctx.strokeStyle = 'rgba(20,70,40,0.45)'; ctx.lineWidth = 1; ctx.stroke();
+  ctx.restore();
+}
+function drawPlantShape(ctx, def, x, y, cell, age=0, attack=0, flash=0, fusionFlash=0) {
+  const v = def.visual || {}; const bob = Math.sin(age*2.2) * cell*0.025; const squash = attack ? 1 + attack*0.08 : 1;
+  const c1 = flash > 0 ? '#ffffff' : v.c1 || '#66d36a'; const c2 = flash > 0 ? '#ffffff' : v.c2 || '#2a804d';
+  ctx.save(); ctx.translate(x, y + bob); ctx.scale(1 + attack*0.05, 1 - attack*0.035);
+  if (v.fusion || fusionFlash > 0) {
+    const glow = v.glow || c1;
+    ctx.save();
+    ctx.globalAlpha = fusionFlash > 0 ? 0.38 + fusionFlash : 0.18 + Math.sin(age*4)*0.04;
+    const rg = ctx.createRadialGradient(0,0,2,0,0,cell*0.62);
+    rg.addColorStop(0, glow); rg.addColorStop(1, 'rgba(255,255,255,0)'); ctx.fillStyle = rg;
+    ctx.beginPath(); ctx.arc(0,0,cell*0.62,0,TAU); ctx.fill();
+    ctx.restore();
+  }
+  ctx.shadowColor = 'rgba(0,0,0,0.25)'; ctx.shadowBlur = 8; ctx.shadowOffsetY = 4;
+  // stem
+  ctx.strokeStyle = shade(c2, -0.25); ctx.lineWidth = Math.max(4, cell*0.07); ctx.lineCap = 'round';
+  ctx.beginPath(); ctx.moveTo(0, cell*0.22); ctx.quadraticCurveTo(cell*0.02, 0, cell*0.01, -cell*0.22); ctx.stroke();
+  drawLeaf(ctx, -cell*0.14, cell*0.12, cell*0.16, cell*0.07, -0.45, shade(c2, 0.08));
+  drawLeaf(ctx, cell*0.13, cell*0.08, cell*0.14, cell*0.06, 0.55, shade(c2, 0.13));
+  ctx.shadowColor = 'transparent';
+
+  const shape = v.shape || 'pod';
+  function bodyEllipse(rx, ry, fillA, fillB) {
+    const gr = ctx.createLinearGradient(-rx, -ry, rx, ry);
+    gr.addColorStop(0, shade(fillA,0.15)); gr.addColorStop(0.52, fillA); gr.addColorStop(1, shade(fillB,-0.12));
+    ctx.fillStyle = gr; ctx.strokeStyle = 'rgba(28,48,40,0.55)'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(0, -cell*0.12, rx, ry, 0, 0, TAU); ctx.fill(); ctx.stroke();
+  }
+  if (shape.includes('tank') || shape === 'brambleTank') {
+    bodyEllipse(cell*0.34, cell*0.32, c1, c2);
+    ctx.fillStyle = c2;
+    for (let i=-2;i<=2;i++) { ctx.beginPath(); ctx.arc(i*cell*0.12, -cell*0.2 + Math.abs(i)*2, cell*0.045, 0, TAU); ctx.fill(); }
+    if (shape.includes('bomb')) { ctx.fillStyle = '#ffdd65'; ctx.beginPath(); ctx.arc(cell*0.18, -cell*0.32, cell*0.09, 0, TAU); ctx.fill(); }
+    if (shape.includes('battery')) { ctx.fillStyle = '#fff173'; fillRoundRect(ctx, -cell*0.12, -cell*0.32, cell*0.24, cell*0.11, 4); }
+    if (shape === 'brambleTank') {
+      ctx.strokeStyle = '#1e3a29'; ctx.lineWidth = 3;
+      for (let i=0;i<5;i++) { ctx.beginPath(); ctx.moveTo(-cell*0.34 + i*cell*0.17, -cell*0.41); ctx.lineTo(-cell*0.24 + i*cell*0.15, -cell*0.55); ctx.stroke(); }
+    }
+  } else if (shape.includes('bomb') || shape.includes('mortar')) {
+    bodyEllipse(cell*0.26, cell*0.26, c1, c2);
+    ctx.fillStyle = shade(c1,0.12); ctx.beginPath(); ctx.arc(0, -cell*0.38, cell*0.14, 0, TAU); ctx.fill();
+    ctx.strokeStyle = shade(c2,-0.25); ctx.lineWidth = 3; ctx.beginPath(); ctx.moveTo(0,-cell*0.28); ctx.lineTo(cell*0.18,-cell*0.47); ctx.stroke();
+  } else if (shape.includes('well')) {
+    ctx.fillStyle = c2; fillRoundRect(ctx, -cell*0.25, -cell*0.08, cell*0.5, cell*0.31, 10);
+    ctx.fillStyle = c1; ctx.beginPath(); ctx.ellipse(0, -cell*0.08, cell*0.28, cell*0.11, 0, 0, TAU); ctx.fill();
+    ctx.strokeStyle = shade(c2,-0.2); ctx.lineWidth = 2; ctx.stroke();
+    ctx.fillStyle = v.glow || '#fff'; ctx.globalAlpha = 0.55 + Math.sin(age*3)*0.2; ctx.beginPath(); ctx.arc(0, -cell*0.1, cell*0.11, 0, TAU); ctx.fill(); ctx.globalAlpha = 1;
+    if (shape.includes('mortar')) { ctx.fillStyle = '#ffc35e'; ctx.beginPath(); ctx.arc(cell*0.18, -cell*0.28, cell*0.12, 0, TAU); ctx.fill(); }
+  } else if (shape.includes('reed') || shape.includes('lens') || shape === 'twin') {
+    ctx.strokeStyle = c2; ctx.lineWidth = cell*0.06; ctx.lineCap = 'round';
+    const stems = shape === 'twin' ? [-0.11,0.11] : [0];
+    for (const sx of stems) { ctx.beginPath(); ctx.moveTo(sx*cell, cell*0.18); ctx.quadraticCurveTo(sx*cell*0.5, -cell*0.12, sx*cell, -cell*0.38); ctx.stroke(); }
+    for (const sx of stems) {
+      const gr = ctx.createLinearGradient(sx*cell-cell*0.12,-cell*0.5,sx*cell+cell*0.14,-cell*0.24);
+      gr.addColorStop(0,c1); gr.addColorStop(1,'#fff'); ctx.fillStyle = gr; ctx.strokeStyle = shade(c1,-0.25); ctx.lineWidth = 2;
+      ctx.beginPath(); ctx.moveTo(sx*cell, -cell*0.52); ctx.lineTo(sx*cell+cell*0.18, -cell*0.35); ctx.lineTo(sx*cell, -cell*0.2); ctx.lineTo(sx*cell-cell*0.18, -cell*0.35); ctx.closePath(); ctx.fill(); ctx.stroke();
+    }
+    if (shape.includes('rhythm')) {
+      ctx.strokeStyle = '#eaff84'; ctx.lineWidth = 2; for(let i=0;i<3;i++){ ctx.beginPath(); ctx.arc(0,-cell*0.35,cell*(0.22+i*0.08),Math.PI*0.15,Math.PI*0.85); ctx.stroke(); }
+    }
+  } else if (shape.includes('thorn') || shape.includes('bow')) {
+    bodyEllipse(cell*0.24, cell*0.24, c1, c2);
+    ctx.strokeStyle = '#203227'; ctx.lineWidth = 3; ctx.lineCap='round';
+    for (let i=0;i<6;i++) { const a = i/6*TAU + age*0.2; ctx.beginPath(); ctx.moveTo(Math.cos(a)*cell*0.15, -cell*0.12 + Math.sin(a)*cell*0.14); ctx.lineTo(Math.cos(a)*cell*0.34, -cell*0.12 + Math.sin(a)*cell*0.28); ctx.stroke(); }
+    if (shape.includes('bow')) { ctx.strokeStyle = c1; ctx.lineWidth = 4; ctx.beginPath(); ctx.arc(cell*0.18, -cell*0.1, cell*0.25, -1.2, 1.2); ctx.stroke(); }
+  } else if (shape.includes('shooter') || shape.includes('iceShooter') || shape.includes('Pod')) {
+    bodyEllipse(cell*0.25, cell*0.25, c1, c2);
+    ctx.fillStyle = c2; ctx.strokeStyle = shade(c2,-0.2); ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.ellipse(cell*0.22 + attack*cell*0.04, -cell*0.12, cell*0.18*squash, cell*0.13, 0, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = v.shot || '#fff'; ctx.globalAlpha = 0.8; ctx.beginPath(); ctx.arc(cell*0.35 + attack*cell*0.05, -cell*0.12, cell*0.035 + attack*cell*0.04, 0, TAU); ctx.fill(); ctx.globalAlpha = 1;
+  } else if (shape === 'pulse') {
+    bodyEllipse(cell*0.25, cell*0.22, c1, c2);
+    ctx.strokeStyle = c1; ctx.lineWidth = 2;
+    for (let i=0;i<3;i++) { ctx.globalAlpha = 0.3; ctx.beginPath(); ctx.arc(0, -cell*0.12, cell*(0.2+i*0.12) + Math.sin(age*3+i)*2, 0, TAU); ctx.stroke(); }
+    ctx.globalAlpha = 1;
+  } else {
+    bodyEllipse(cell*0.25, cell*0.27, c1, c2);
+    ctx.fillStyle = v.glow || '#fff6a0'; ctx.globalAlpha = 0.75; ctx.beginPath(); ctx.arc(0, -cell*0.18, cell*0.11, 0, TAU); ctx.fill(); ctx.globalAlpha = 1;
+  }
+  ctx.restore();
+}
+
+class Enemy {
+  constructor(game, id, row, x) {
+    this.game = game; this.id = id; this.def = ENEMY_DEFS[id]; this.row = row; this.x = x; this.y = game.board.laneY(row);
+    this.hp = this.def.hp; this.maxHp = this.def.hp; this.radius = game.board.cell * 0.27 * (this.def.size || 1);
+    this.attackTimer = rand(0.1, 0.8); this.dead = false; this.active = true; this.age = 0; this.flash = 0;
+    this.slowTimer = 0; this.slowMult = 1; this.freezeTimer = 0; this.bleedTimer = 0; this.bleedDps = 0;
+    this.jumpAvailable = !!this.def.jumper; this.jumping = 0; this.summonTimer = this.def.summonInterval ? rand(4, this.def.summonInterval) : 0;
+    this.spawnWave = game.waveManager ? game.waveManager.current : 0;
+  }
+  applySlow(mult, dur) {
+    if (!mult || !dur) return;
+    if (mult < this.slowMult || this.slowTimer <= 0) this.slowMult = mult;
+    this.slowTimer = Math.max(this.slowTimer, dur);
+  }
+  applyBleed(dps, dur) { if (dps > this.bleedDps) this.bleedDps = dps; this.bleedTimer = Math.max(this.bleedTimer, dur); }
+  update(dt) {
+    if (!this.active || this.dead) return;
+    this.age += dt; this.flash = Math.max(0, this.flash - dt);
+    if (this.slowTimer > 0) { this.slowTimer -= dt; if (this.slowTimer <= 0) this.slowMult = 1; }
+    if (this.freezeTimer > 0) { this.freezeTimer -= dt; return; }
+    if (this.bleedTimer > 0) {
+      this.bleedTimer -= dt;
+      this.hp -= this.bleedDps * dt;
+      if (Math.random() < dt * 5) this.game.particles.spawn(this.x + rand(-8,8), this.y + rand(-10,10), {color:'#90ff7c', size:2.5, life:0.3, vy:-15});
+      if (this.bleedTimer <= 0) this.bleedDps = 0;
+      if (this.hp <= 0) { this.die(); return; }
+    }
+    if (this.def.summoner) {
+      this.summonTimer -= dt;
+      if (this.summonTimer <= 0) {
+        this.summonTimer += this.def.summonInterval || 8;
+        this.game.spawnEnemy('mite', this.row, this.x + this.game.board.cell*0.45, true);
+        this.game.particles.burst(this.x + 12, this.y, '#ff9bd8', 10, 80, {life:0.35});
+      }
+    }
+    if (this.jumping > 0) {
+      this.jumping -= dt;
+      this.x -= this.getSpeed() * dt * 1.7;
+      this.y = this.game.board.laneY(this.row) - Math.sin((1-this.jumping/0.8)*Math.PI) * this.game.board.cell*0.38;
+      if (this.jumping <= 0) this.y = this.game.board.laneY(this.row);
+      return;
+    }
+    const contactPlant = this.game.getBlockingPlant(this);
+    if (contactPlant && this.jumpAvailable) {
+      this.jumpAvailable = false; this.jumping = 0.8;
+      this.x -= this.game.board.cell * 0.72;
+      this.game.particles.burst(this.x, this.y, '#a4ff80', 10, 90, {life:0.3});
+      return;
+    }
+    if (this.def.ranged) {
+      const target = this.game.findPlantForRangedEnemy(this);
+      if (target) {
+        this.attackTimer -= dt;
+        if (this.attackTimer <= 0) {
+          this.attackTimer += 1 / (this.def.attackRate || 0.8);
+          this.game.enemyProjectiles.push(new EnemyProjectile(this.game, this, target));
+          this.game.audio.play('shoot');
+          this.game.particles.burst(this.x - 16, this.y - 8, '#caa3ff', 5, 50, {life:0.2});
+        }
+        return;
+      }
+    }
+    if (contactPlant) {
+      this.attackTimer -= dt;
+      if (this.attackTimer <= 0) {
+        this.attackTimer += 1 / (this.def.attackRate || 0.8);
+        const dmg = this.def.damage * (this.def.plantDamageMult || 1);
+        contactPlant.takeDamage(dmg, this);
+        this.game.particles.burst(contactPlant.x, contactPlant.y, '#ff886b', 4, 40, {life:0.18});
+        this.game.audio.play('hit');
+      }
+      return;
+    }
+    this.x -= this.getSpeed() * dt;
+    this.y = lerp(this.y, this.game.board.laneY(this.row), 0.15);
+  }
+  getSpeed() {
+    let s = this.def.speed * this.slowMult;
+    for (const e of this.game.enemies) {
+      if (e === this || !e.active || e.dead || !e.def.auraSpeed) continue;
+      if (Math.abs(e.row - this.row) <= 1 && dist2(e.x,e.y,this.x,this.y) < (e.def.auraRadius || 160) ** 2) s *= e.def.auraSpeed;
+    }
+    return s;
+  }
+  takeDamage(amount, effects={}, projectile=false) {
+    if (this.dead || !this.active) return;
+    let dmg = amount;
+    if (projectile && this.def.projectileResist) dmg *= (1 - this.def.projectileResist);
+    if (this.def.armor) dmg = Math.max(1, dmg - this.def.armor);
+    this.hp -= dmg;
+    this.flash = 0.10;
+    if (effects) {
+      if (effects.slow) this.applySlow(effects.slow, effects.slowDuration || 2);
+      if (effects.bleed) this.applyBleed(effects.bleed, effects.bleedDuration || 3);
+      if (effects.freezeChance && Math.random() < effects.freezeChance) { this.freezeTimer = Math.max(this.freezeTimer, 0.65); this.applySlow(0.25, 1.5); }
+    }
+    if (this.hp <= 0) this.die();
+  }
+  die() {
+    if (this.dead) return;
+    this.dead = true; this.active = false;
+    this.game.particles.burst(this.x, this.y, this.def.visual.c1, this.def.boss ? 45 : 18, this.def.boss ? 150 : 90, {life:this.def.boss ? 0.9 : 0.5});
+    this.game.particles.text(this.x, this.y - 24, '+' + (this.def.value || 3), '#ffe86d', 13);
+    if ((this.def.value || 0) >= 12 || Math.random() < 0.16) this.game.addLumen(Math.max(2, Math.floor((this.def.value || 4) * 0.45)), this.x, this.y - 20, true);
+    this.game.audio.play('death');
+  }
+  render(ctx) {
+    if (!this.active && !this.dead) return;
+    drawEnemyShape(ctx, this);
+    // HP
+    const hpPct = clamp(this.hp / this.maxHp, 0, 1);
+    if (hpPct < 0.98 || this.def.boss) {
+      const w = this.radius * (this.def.boss ? 2.2 : 1.8), h = this.def.boss ? 8 : 5;
+      const x = this.x - w/2, y = this.y - this.radius - 18;
+      ctx.fillStyle = 'rgba(0,0,0,0.42)'; fillRoundRect(ctx, x, y, w, h, h/2);
+      ctx.fillStyle = hpPct > 0.35 ? '#ffdc64' : '#ff5757'; fillRoundRect(ctx, x, y, w*hpPct, h, h/2);
+    }
+    if (this.slowTimer > 0) {
+      ctx.save(); ctx.globalAlpha = 0.45; ctx.strokeStyle = '#bdfaff'; ctx.lineWidth = 2; ctx.beginPath(); ctx.arc(this.x, this.y, this.radius + 7, 0, TAU); ctx.stroke(); ctx.restore();
+    }
+    if (this.freezeTimer > 0) {
+      ctx.save(); ctx.globalAlpha = 0.35; ctx.fillStyle = '#dffcff'; ctx.beginPath(); ctx.arc(this.x, this.y, this.radius + 4, 0, TAU); ctx.fill(); ctx.restore();
+    }
+  }
+}
+function drawEnemyShape(ctx, e) {
+  const v = e.def.visual, r = e.radius, age = e.age;
+  const c1 = e.flash > 0 ? '#ffffff' : v.c1, c2 = e.flash > 0 ? '#ffffff' : v.c2;
+  const bob = Math.sin(age * (e.def.speed * 0.09 + 2)) * 2;
+  ctx.save(); ctx.translate(e.x, e.y + bob); ctx.scale(e.def.boss ? 1.05 : 1, e.def.boss ? 1.02 : 1);
+  ctx.shadowColor = 'rgba(0,0,0,0.35)'; ctx.shadowBlur = 7; ctx.shadowOffsetY = 4;
+  const gr = ctx.createLinearGradient(-r, -r, r, r);
+  gr.addColorStop(0, shade(c1,0.12)); gr.addColorStop(0.65, c1); gr.addColorStop(1, shade(c2,-0.15));
+  ctx.fillStyle = gr; ctx.strokeStyle = 'rgba(20,15,20,0.55)'; ctx.lineWidth = 2;
+  const sh = v.shape;
+  if (sh === 'skitter' || sh === 'hopper') {
+    ctx.beginPath(); ctx.ellipse(0, 0, r*1.15, r*0.72, 0, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = c2; ctx.lineWidth = 3;
+    for (let i=-2;i<=2;i++) { ctx.beginPath(); ctx.moveTo(-r*0.1, i*r*0.22); ctx.lineTo(r*0.8, i*r*0.35 + Math.sin(age*8+i)*3); ctx.stroke(); }
+  } else if (sh === 'shell' || sh === 'brute') {
+    ctx.beginPath(); ctx.ellipse(0, 0, r*1.18, r*0.9, 0, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = shade(c2,0.1); ctx.lineWidth = 3;
+    for (let i=-2;i<=2;i++) { ctx.beginPath(); ctx.moveTo(-r*0.7, i*r*0.18); ctx.quadraticCurveTo(0, -r*0.55+Math.abs(i)*3, r*0.7, i*r*0.18); ctx.stroke(); }
+  } else if (sh === 'shard') {
+    ctx.beginPath(); ctx.moveTo(-r, 0); ctx.lineTo(-r*0.2, -r*0.9); ctx.lineTo(r*0.95, -r*0.15); ctx.lineTo(r*0.55, r*0.7); ctx.closePath(); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#dbeaff'; for(let i=0;i<3;i++){ ctx.beginPath(); ctx.moveTo(-r*0.2+i*r*0.28,-r*0.5+i*2); ctx.lineTo(i*r*0.24,-r*1.05); ctx.lineTo(r*0.14+i*r*0.22,-r*0.34); ctx.closePath(); ctx.fill(); }
+  } else if (sh === 'spitter') {
+    ctx.beginPath(); ctx.ellipse(0, 0, r*0.92, r*1.0, 0, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = shade(c1,0.18); ctx.beginPath(); ctx.arc(-r*0.72, -r*0.1, r*0.32, 0, TAU); ctx.fill(); ctx.stroke();
+  } else if (sh === 'breaker') {
+    ctx.beginPath(); ctx.ellipse(0, 0, r*1.05, r*0.85, 0, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#e8c17b'; ctx.beginPath(); ctx.moveTo(-r*0.95, -r*0.2); ctx.lineTo(-r*1.45, 0); ctx.lineTo(-r*0.95, r*0.2); ctx.closePath(); ctx.fill(); ctx.stroke();
+  } else if (sh === 'herald') {
+    ctx.beginPath(); ctx.ellipse(0, 0, r*0.9, r*0.85, 0, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.strokeStyle = '#f5e779'; ctx.lineWidth = 2; for(let i=0;i<3;i++){ ctx.beginPath(); ctx.arc(-r*0.75, 0, r*(0.5+i*0.25), -0.7, 0.7); ctx.stroke(); }
+  } else if (sh === 'brood') {
+    ctx.beginPath(); ctx.ellipse(0, 0, r*1.02, r*1.1, 0, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#ffb4df'; for(let i=0;i<5;i++){ ctx.beginPath(); ctx.arc(Math.cos(i*TAU/5)*r*0.45, Math.sin(i*TAU/5)*r*0.45, r*0.16, 0, TAU); ctx.fill(); }
+  } else if (sh === 'boss') {
+    ctx.beginPath(); ctx.ellipse(0, 0, r*1.25, r*0.98, 0, 0, TAU); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = '#9c76ff'; for(let i=-2;i<=2;i++){ ctx.beginPath(); ctx.moveTo(i*r*0.28, -r*0.75); ctx.lineTo(i*r*0.20 + r*0.13, -r*1.25); ctx.lineTo(i*r*0.08 + r*0.28, -r*0.65); ctx.closePath(); ctx.fill(); }
+    ctx.strokeStyle = '#bdaaff'; ctx.globalAlpha = 0.45; ctx.lineWidth = 3; ctx.beginPath(); ctx.arc(0,0,r*1.45 + Math.sin(age*3)*4,0,TAU); ctx.stroke(); ctx.globalAlpha=1;
+  } else {
+    ctx.beginPath(); ctx.ellipse(0, 0, r, r*0.78, 0, 0, TAU); ctx.fill(); ctx.stroke();
+  }
+  // eyes
+  ctx.shadowColor = 'transparent'; ctx.fillStyle = '#121317';
+  ctx.beginPath(); ctx.arc(-r*0.35, -r*0.18, Math.max(2,r*0.12), 0, TAU); ctx.fill();
+  ctx.beginPath(); ctx.arc(r*0.05, -r*0.20, Math.max(2,r*0.11), 0, TAU); ctx.fill();
+  ctx.restore();
+}
+
+class WaveManager {
+  constructor(game) { this.game = game; this.reset(); }
+  reset() {
+    this.current = -1; this.inWave = false; this.waitTimer = BALANCE.firstWaveDelay; this.waveTime = 0;
+    this.spawnList = []; this.spawnIndex = 0; this.total = 0; this.progress = 0; this.done = false;
+  }
+  buildWave(wave) {
+    const list = [];
+    for (const g of wave.groups) {
+      for (let i=0;i<g.count;i++) {
+        list.push({ t:(g.start || 0) + i*(g.interval || 2) + rand(0, g.jitter || 0.55), enemy:g.enemy, lane:g.lane });
+      }
+    }
+    list.sort((a,b)=>a.t-b.t);
+    return list;
+  }
+  startNext() {
+    this.current += 1;
+    if (this.current >= WAVES.length) { this.game.victory(); return; }
+    const wave = WAVES[this.current];
+    this.spawnList = this.buildWave(wave); this.spawnIndex = 0; this.total = this.spawnList.length; this.waveTime = 0; this.inWave = true; this.progress = 0;
+    this.game.toast(`Wave ${this.current+1}: ${wave.name}`, wave.big ? '#ffdc65' : '#d7fff2', wave.big ? 3.6 : 2.4);
+    if (wave.big) { this.game.warningTimer = 2.2; this.game.audio.play('warning'); }
+  }
+  update(dt) {
+    if (this.done) return;
+    if (!this.inWave) {
+      this.waitTimer -= dt;
+      if (this.waitTimer <= 0) this.startNext();
+      return;
+    }
+    this.waveTime += dt;
+    while (this.spawnIndex < this.spawnList.length && this.spawnList[this.spawnIndex].t <= this.waveTime) {
+      const ev = this.spawnList[this.spawnIndex++];
+      let lane;
+      if (Array.isArray(ev.lane)) lane = ev.lane[randInt(0, ev.lane.length-1)];
+      else if (typeof ev.lane === 'number') lane = ev.lane;
+      else lane = randInt(0, GRID.rows-1);
+      this.game.spawnEnemy(ev.enemy, lane);
+    }
+    if (this.total > 0) this.progress = this.spawnIndex / this.total;
+    if (this.spawnIndex >= this.spawnList.length && this.game.enemies.length === 0) {
+      this.inWave = false; this.progress = 1;
+      if (this.current >= WAVES.length - 1) { this.done = true; this.game.victory(); }
+      else { this.waitTimer = BALANCE.betweenWaves; this.game.toast(`Wave ${this.current+1} dọn xong`, '#a7ffad', 1.7); }
+    }
+  }
+  getLabel() {
+    const waveNum = clamp(this.current + 1, 0, WAVES.length);
+    return `${waveNum}/${WAVES.length}`;
+  }
+}
+
+class FusionSystem {
+  constructor(game) { this.game = game; }
+  preview(aPlant, bPlant) {
+    if (!aPlant || !bPlant || aPlant === bPlant) return {valid:false, reason:'Chọn 2 plant khác nhau'};
+    const recipe = getFusionByPair(aPlant.id, bPlant.id);
+    if (!recipe) return {valid:false, reason:'Không có recipe fusion'};
+    if (this.game.lumen < recipe.cost) return {valid:false, recipe, reason:`Thiếu ${recipe.cost - this.game.lumen} Lumen`};
+    return {valid:true, recipe, reason:''};
+  }
+  fuse(aPlant, bPlant) {
+    const p = this.preview(aPlant, bPlant);
+    if (!p.valid) { this.game.toast(p.reason, '#ff8b7f', 1.4); this.game.audio.play('invalid'); return false; }
+    const recipe = p.recipe;
+    const targetRow = bPlant.row, targetCol = bPlant.col;
+    const ax = aPlant.x, ay = aPlant.y, bx = bPlant.x, by = bPlant.y;
+    this.game.lumen -= recipe.cost;
+    this.game.plants[aPlant.row][aPlant.col] = null;
+    this.game.plants[bPlant.row][bPlant.col] = null;
+    const plant = new Plant(this.game, recipe.result, targetRow, targetCol);
+    plant.baseA = recipe.a; plant.baseB = recipe.b;
+    this.game.plants[targetRow][targetCol] = plant;
+    this.game.selectedCell = {row:targetRow, col:targetCol};
+    this.game.fusionMode = false; this.game.fusionFirst = null;
+    this.game.particles.burst((ax+bx)/2, (ay+by)/2, recipe.unit.visual.glow || recipe.unit.visual.c1, 42, 170, {life:0.72});
+    for (let i=0;i<4;i++) this.game.particles.spawn(plant.x, plant.y, {kind:'ring', color:recipe.unit.visual.glow || recipe.unit.visual.c1, size:20+i*10, life:0.65+i*0.08});
+    this.game.screenShake = Math.max(this.game.screenShake, 6);
+    this.game.audio.play('fusion');
+    this.game.toast(`Fusion thành công: ${recipe.name}`, '#fff18a', 2.3);
+    return true;
+  }
+}
+
+class UI {
+  constructor(game) { this.game = game; this.cards = []; this.buttons = {}; this.overlayButton = null; this.sellButton = null; this.fusionButton = null; this.dragVolume = false; }
+  handleDown(x, y) {
+    const g = this.game;
+    if (g.state === 'title') {
+      if (contains(this.overlayButton, x, y)) { g.startGame(); g.audio.play('click'); return true; }
+      return true;
+    }
+    if (g.state === 'victory' || g.state === 'defeat') {
+      if (contains(this.overlayButton, x, y)) { g.startGame(); g.audio.play('click'); return true; }
+      return true;
+    }
+    if (contains(this.buttons.pause, x, y)) { g.togglePause(); g.audio.play('click'); return true; }
+    if (contains(this.buttons.speed, x, y)) { g.speed = g.speed === 1 ? 2 : 1; g.toast(`Tốc độ x${g.speed}`, '#d8f7ff', 1.0); g.audio.play('click'); return true; }
+    if (contains(this.buttons.mute, x, y)) { g.audio.toggleMute(); g.audio.play('click'); return true; }
+    if (contains(this.buttons.volume, x, y)) { this.dragVolume = true; this.setVolumeFromX(x); g.audio.play('click'); return true; }
+    if (contains(this.sellButton, x, y)) { g.sellSelectedPlant(); return true; }
+    if (contains(this.fusionButton, x, y)) { g.startFusionFromSelection(); return true; }
+    for (const card of this.cards) {
+      if (contains(card.rect, x, y)) { g.selectCard(card.id); g.audio.play('click'); return true; }
+    }
+    return false;
+  }
+  handleMove(x, y) { if (this.dragVolume) this.setVolumeFromX(x); }
+  handleUp() { this.dragVolume = false; }
+  setVolumeFromX(x) {
+    const r = this.buttons.volume;
+    if (!r) return;
+    this.game.audio.setVolume(clamp((x - r.x) / r.w, 0, 1));
+  }
+  render(ctx) {
+    const g = this.game;
+    this.cards = []; this.buttons = {}; this.overlayButton = null; this.sellButton = null; this.fusionButton = null;
+    this.renderTop(ctx);
+    this.renderCards(ctx);
+    if (g.board.sidePanel) this.renderSidePanel(ctx); else this.renderCompactInfo(ctx);
+    if (g.state === 'title') this.renderTitle(ctx);
+    if (g.paused && g.state === 'playing') this.renderPause(ctx);
+    if (g.state === 'victory' || g.state === 'defeat') this.renderEnd(ctx);
+    this.renderTooltip(ctx);
+  }
+  renderTop(ctx) {
+    const g = this.game;
+    ctx.save();
+    const grad = ctx.createLinearGradient(0,0,0,72); grad.addColorStop(0,'rgba(12,22,38,0.96)'); grad.addColorStop(1,'rgba(18,42,55,0.78)');
+    ctx.fillStyle = grad; ctx.fillRect(0,0,g.w,74);
+    ctx.strokeStyle = 'rgba(170,245,255,0.18)'; ctx.beginPath(); ctx.moveTo(0,73.5); ctx.lineTo(g.w,73.5); ctx.stroke();
+
+    ctx.fillStyle = 'rgba(255,226,82,0.16)'; fillRoundRect(ctx, 18, 15, 150, 42, 15);
+    ctx.strokeStyle = 'rgba(255,244,161,0.45)'; strokeRoundRect(ctx, 18, 15, 150, 42, 15);
+    ctx.fillStyle = '#ffe86d'; ctx.beginPath(); ctx.arc(42,36,14,0,TAU); ctx.fill();
+    drawLeft(ctx, `Lumen ${format(g.lumen)}`, 62, 36, 20, '#fff4a4', 900);
+
+    const wx = 186;
+    drawLeft(ctx, `Wave ${g.waveManager.getLabel()}`, wx, 26, 16, '#d9f8ff', 800);
+    const pb = {x:wx, y:42, w:250, h:10};
+    ctx.fillStyle = 'rgba(255,255,255,0.14)'; fillRoundRect(ctx, pb.x, pb.y, pb.w, pb.h, 5);
+    ctx.fillStyle = '#7effbd'; fillRoundRect(ctx, pb.x, pb.y, pb.w * clamp(g.waveManager.progress,0,1), pb.h, 5);
+    if (!g.waveManager.inWave && g.state === 'playing') drawLeft(ctx, `wave sau: ${Math.ceil(g.waveManager.waitTimer)}s`, pb.x + pb.w + 14, 47, 13, '#aee7ff', 700);
+
+    this.buttons.pause = {x:g.w-360,y:18,w:78,h:36};
+    this.buttons.speed = {x:g.w-272,y:18,w:74,h:36};
+    this.buttons.mute = {x:g.w-188,y:18,w:54,h:36};
+    this.buttons.volume = {x:g.w-122,y:31,w:92,h:12};
+    this.drawButton(ctx, this.buttons.pause, g.paused ? 'PLAY' : 'PAUSE');
+    this.drawButton(ctx, this.buttons.speed, `x${g.speed}`);
+    this.drawButton(ctx, this.buttons.mute, g.audio.muted ? 'MUTE' : 'SND');
+    ctx.fillStyle = 'rgba(255,255,255,0.18)'; fillRoundRect(ctx, this.buttons.volume.x, this.buttons.volume.y, this.buttons.volume.w, this.buttons.volume.h, 6);
+    ctx.fillStyle = '#a7f7ff'; fillRoundRect(ctx, this.buttons.volume.x, this.buttons.volume.y, this.buttons.volume.w * g.audio.volume, this.buttons.volume.h, 6);
+    ctx.restore();
+  }
+  drawButton(ctx, r, label) {
+    ctx.fillStyle = 'rgba(43,71,94,0.88)'; fillRoundRect(ctx, r.x, r.y, r.w, r.h, 11);
+    ctx.strokeStyle = 'rgba(169,238,255,0.38)'; ctx.lineWidth = 1.5; strokeRoundRect(ctx, r.x, r.y, r.w, r.h, 11);
+    drawCentered(ctx, label, r.x+r.w/2, r.y+r.h/2, 13, '#e5fbff', 900);
+  }
+  renderCards(ctx) {
+    const g = this.game;
+    const n = CARD_IDS.length, gap = 7;
+    const cardW = Math.floor(clamp((g.w - 34 - gap*(n-1)) / n, 70, 98));
+    const cardH = 104;
+    const total = n*cardW + (n-1)*gap;
+    const x0 = Math.round((g.w-total)/2);
+    const y = g.h - cardH - 12;
+    ctx.save();
+    ctx.fillStyle = 'rgba(8,15,27,0.72)'; fillRoundRect(ctx, x0-12, y-10, total+24, cardH+20, 18);
+    for (let i=0;i<n;i++) {
+      const id = CARD_IDS[i], def = PLANT_DEFS[id];
+      const x = x0 + i*(cardW+gap); const r = {x,y,w:cardW,h:cardH};
+      const cd = g.cardCooldowns[id] || 0;
+      const can = g.lumen >= def.cost && cd <= 0;
+      const selected = g.selectedCard === id;
+      ctx.fillStyle = selected ? 'rgba(255,238,122,0.22)' : 'rgba(26,50,55,0.92)'; fillRoundRect(ctx,x,y,cardW,cardH,14);
+      ctx.strokeStyle = selected ? '#ffe86d' : 'rgba(190,255,219,0.30)'; ctx.lineWidth = selected ? 3 : 1.5; strokeRoundRect(ctx,x,y,cardW,cardH,14);
+      ctx.save(); ctx.translate(x+cardW/2, y+38); ctx.scale(0.78,0.78); drawPlantShape(ctx, def, 0, 0, Math.min(76,cardW), g.time + i, 0, 0, 0); ctx.restore();
+      drawCentered(ctx, `${i+1}`, x+13, y+13, 12, '#9ceaff', 900);
+      drawCentered(ctx, def.short, x+cardW/2, y+73, 12, '#f0fff2', 850);
+      ctx.fillStyle = '#ffe86d'; ctx.beginPath(); ctx.arc(x+cardW/2-18, y+92, 7, 0, TAU); ctx.fill();
+      drawLeft(ctx, def.cost, x+cardW/2-6, y+92, 12, '#fff4a4', 900);
+      if (!can) {
+        ctx.fillStyle = cd > 0 ? 'rgba(35,56,76,0.72)' : 'rgba(20,20,25,0.55)'; fillRoundRect(ctx,x,y,cardW,cardH,14);
+        if (cd > 0) {
+          const pct = clamp(cd / def.cooldown, 0, 1);
+          ctx.fillStyle = 'rgba(255,255,255,0.18)'; fillRoundRect(ctx, x, y + cardH*(1-pct), cardW, cardH*pct, 14);
+          drawCentered(ctx, cd.toFixed(1), x+cardW/2, y+cardH/2, 18, '#ffffff', 900);
+        } else drawCentered(ctx, 'thiếu', x+cardW/2, y+cardH/2, 15, '#ffb6a6', 900);
+      }
+      this.cards.push({id, rect:r});
+    }
+    drawCentered(ctx, '1–9 chọn nhanh  •  Kéo plant để fusion  •  F fusion  •  Space pause  •  R restart', g.w/2, y-24, 13, '#bbe9ee', 700);
+    ctx.restore();
+  }
+  renderSidePanel(ctx) {
+    const g = this.game, b = g.board;
+    const x = b.x + b.w + 128, y = b.y, w = Math.min(260, g.w - x - 18), h = b.h;
+    ctx.save();
+    ctx.fillStyle = 'rgba(10,19,34,0.72)'; fillRoundRect(ctx, x, y, w, h, 18);
+    ctx.strokeStyle = 'rgba(163,241,255,0.28)'; strokeRoundRect(ctx, x, y, w, h, 18);
+    drawCentered(ctx, 'SỔ FUSION', x+w/2, y+22, 15, '#eaffff', 900);
+    let yy = y + 48;
+    const selectedPlant = g.getSelectedPlant();
+    if (selectedPlant) {
+      this.renderPlantInfo(ctx, x+12, yy, w-24, selectedPlant);
+      yy += 116;
+    }
+    const maxList = Math.floor((y+h-yy-12) / 22);
+    for (let i=0; i<Math.min(FUSION_DEFS.length, maxList); i++) {
+      const f = FUSION_DEFS[i];
+      const a = PLANT_DEFS[f.a].short, bb = PLANT_DEFS[f.b].short;
+      const active = g.fusionFirst && (g.fusionFirst.id === f.a || g.fusionFirst.id === f.b);
+      ctx.fillStyle = active ? 'rgba(255,238,122,0.16)' : (i%2 ? 'rgba(255,255,255,0.035)' : 'rgba(255,255,255,0.07)');
+      fillRoundRect(ctx, x+10, yy-9, w-20, 20, 7);
+      drawLeft(ctx, `${a}+${bb}`, x+18, yy, 11, '#bdf8ff', 800);
+      drawRight(ctx, `→ ${f.name}`, x+w-16, yy, 11, '#fff0a3', 800);
+      yy += 22;
+    }
+    ctx.restore();
+  }
+  renderPlantInfo(ctx, x, y, w, plant) {
+    const g = this.game, def = plant.def;
+    ctx.fillStyle = 'rgba(255,255,255,0.08)'; fillRoundRect(ctx, x, y, w, 104, 12);
+    drawLeft(ctx, def.name, x+10, y+17, 14, '#ffffff', 900);
+    drawLeft(ctx, def.role, x+10, y+38, 12, '#a7f7ff', 750);
+    const pct = clamp(plant.hp / plant.maxHp,0,1);
+    ctx.fillStyle = 'rgba(0,0,0,0.3)'; fillRoundRect(ctx, x+10, y+52, w-20, 7, 4);
+    ctx.fillStyle = pct > .35 ? '#8cff81' : '#ff6d68'; fillRoundRect(ctx, x+10, y+52, (w-20)*pct, 7, 4);
+    drawLeft(ctx, `HP ${Math.ceil(plant.hp)}/${plant.maxHp}`, x+10, y+72, 11, '#d6ffee', 700);
+    drawLeft(ctx, def.damage ? `DMG ${def.damage}  RATE ${def.attackRate}/s` : 'Không gây sát thương trực tiếp', x+10, y+88, 11, '#d7eaff', 700);
+    this.fusionButton = {x:x+w-96, y:y+12, w:86, h:28};
+    this.sellButton = {x:x+w-96, y:y+48, w:86, h:28};
+    this.drawMiniButton(ctx, this.fusionButton, 'Fusion');
+    this.drawMiniButton(ctx, this.sellButton, 'Bán');
+  }
+  drawMiniButton(ctx, r, label) {
+    ctx.fillStyle = 'rgba(60,91,112,0.88)'; fillRoundRect(ctx,r.x,r.y,r.w,r.h,9);
+    ctx.strokeStyle = 'rgba(197,251,255,0.3)'; strokeRoundRect(ctx,r.x,r.y,r.w,r.h,9);
+    drawCentered(ctx,label,r.x+r.w/2,r.y+r.h/2,11,'#f1fdff',900);
+  }
+  renderCompactInfo(ctx) {
+    const plant = this.game.getSelectedPlant();
+    if (!plant) return;
+    const x = 16, y = 82, w = 250;
+    ctx.save();
+    ctx.fillStyle = 'rgba(9,17,29,0.72)'; fillRoundRect(ctx,x,y,w,94,14);
+    ctx.strokeStyle = 'rgba(163,241,255,0.28)'; strokeRoundRect(ctx,x,y,w,94,14);
+    this.renderPlantInfo(ctx, x+8, y+8, w-16, plant);
+    ctx.restore();
+  }
+  renderTooltip(ctx) {
+    const g = this.game;
+    let lines = [];
+    if (g.dragSource && g.dragHoverPlant) {
+      const p = g.fusionSystem.preview(g.dragSource, g.dragHoverPlant);
+      if (p.valid) lines = [`Fusion: ${p.recipe.name}`, `${PLANT_DEFS[p.recipe.a].short} + ${PLANT_DEFS[p.recipe.b].short}`, `Cost ${p.recipe.cost} Lumen`, p.recipe.behavior];
+      else lines = ['Fusion không hợp lệ', p.reason];
+    } else if (g.fusionMode && g.fusionFirst) {
+      lines = [`Chọn plant thứ hai để fusion với ${g.fusionFirst.def.short}`, 'Kéo hoặc click mục tiêu hợp lệ.'];
+    } else if (g.hoverCard) {
+      const d = PLANT_DEFS[g.hoverCard]; lines = [d.name, `${d.role} • Cost ${d.cost}`, d.desc];
+    }
+    if (!lines.length || g.state !== 'playing') return;
+    const x = clamp(g.mouse.x + 18, 12, g.w - 330), y = clamp(g.mouse.y + 18, 78, g.h - 170), w = 310;
+    ctx.save(); ctx.fillStyle = 'rgba(7,14,25,0.88)'; fillRoundRect(ctx,x,y,w,lines.length*20+18,12); ctx.strokeStyle='rgba(213,255,249,0.28)'; strokeRoundRect(ctx,x,y,w,lines.length*20+18,12);
+    for (let i=0;i<lines.length;i++) drawLeft(ctx, lines[i], x+12, y+15+i*20, i===0?13:12, i===0?'#fff2a3':'#d8f7ff', i===0?900:650);
+    ctx.restore();
+  }
+  renderTitle(ctx) {
+    const g = this.game;
+    ctx.save(); ctx.fillStyle='rgba(4,8,15,0.62)'; ctx.fillRect(0,0,g.w,g.h);
+    const w = Math.min(760, g.w-44), h = 420, x = (g.w-w)/2, y = (g.h-h)/2;
+    ctx.fillStyle = 'rgba(12,24,40,0.93)'; fillRoundRect(ctx,x,y,w,h,24);
+    ctx.strokeStyle = 'rgba(177,255,240,0.35)'; ctx.lineWidth=2; strokeRoundRect(ctx,x,y,w,h,24);
+    drawCentered(ctx, 'LUMENROOT', g.w/2, y+58, 42, '#fff2a3', 1000);
+    drawCentered(ctx, 'FUSION SIEGE', g.w/2, y+100, 28, '#9ffaff', 1000);
+    drawCentered(ctx, 'Lane-based fusion garden defense • IP mới • offline Canvas 2D', g.w/2, y+136, 15, '#d6fff8', 750);
+    const text = [
+      'Đặt các mầm phòng thủ theo ô để chặn đàn quái từ khe nứt bên phải.',
+      'Thu Lumen rơi và Lumen từ plant kinh tế để xây tuyến phòng thủ.',
+      'Fusion là lõi game: kéo hai plant tương thích chồng lên nhau để tạo hybrid mạnh hơn.',
+      'Mỗi lane có một Lăng Kính Cứu Nguy dùng một lần khi bị thủng.',
+      'Thắng khi sống sót qua 16 wave; thua nếu lane đã mất cứu nguy mà vẫn bị vượt cổng.'
+    ];
+    for (let i=0;i<text.length;i++) drawCentered(ctx,text[i],g.w/2,y+178+i*28,15,'#e5f7ff',650);
+    this.overlayButton = {x:g.w/2-120,y:y+h-82,w:240,h:48};
+    ctx.fillStyle='#ffe86d'; fillRoundRect(ctx,this.overlayButton.x,this.overlayButton.y,this.overlayButton.w,this.overlayButton.h,16);
+    ctx.strokeStyle='#fff8b2'; strokeRoundRect(ctx,this.overlayButton.x,this.overlayButton.y,this.overlayButton.w,this.overlayButton.h,16);
+    drawCentered(ctx,'BẮT ĐẦU',g.w/2,this.overlayButton.y+24,18,'#24313b',1000);
+    ctx.restore();
+  }
+  renderPause(ctx) {
+    const g=this.game; ctx.save(); ctx.fillStyle='rgba(4,8,15,0.44)'; ctx.fillRect(0,0,g.w,g.h); drawCentered(ctx,'PAUSED',g.w/2,g.h/2-18,36,'#fff2a3',1000); drawCentered(ctx,'Space để tiếp tục',g.w/2,g.h/2+24,16,'#e5f7ff',750); ctx.restore();
+  }
+  renderEnd(ctx) {
+    const g=this.game, win=g.state==='victory';
+    ctx.save(); ctx.fillStyle=win?'rgba(5,20,24,0.68)':'rgba(18,5,10,0.72)'; ctx.fillRect(0,0,g.w,g.h);
+    const w=Math.min(560,g.w-40), h=250, x=(g.w-w)/2, y=(g.h-h)/2;
+    ctx.fillStyle='rgba(12,24,40,0.95)'; fillRoundRect(ctx,x,y,w,h,22); ctx.strokeStyle=win?'rgba(180,255,197,0.5)':'rgba(255,136,126,0.5)'; strokeRoundRect(ctx,x,y,w,h,22);
+    drawCentered(ctx, win?'VICTORY':'DEFEAT', g.w/2, y+62, 42, win?'#aaff9b':'#ff8d82', 1000);
+    drawCentered(ctx, win?'Cổng Lumen trụ vững qua toàn bộ 16 wave.':'Khe nứt đã vượt qua tuyến phòng thủ.', g.w/2, y+112, 16, '#e7f8ff', 750);
+    drawCentered(ctx, `Fusion đã tạo: ${g.stats.fusions}  •  Địch hạ: ${g.stats.kills}  •  Thời gian: ${Math.floor(g.runTime/60)}:${String(Math.floor(g.runTime%60)).padStart(2,'0')}`, g.w/2, y+146, 14, '#d7f7ff', 700);
+    this.overlayButton={x:g.w/2-105,y:y+h-68,w:210,h:44};
+    ctx.fillStyle=win?'#aaff9b':'#ffe86d'; fillRoundRect(ctx,this.overlayButton.x,this.overlayButton.y,this.overlayButton.w,this.overlayButton.h,15); drawCentered(ctx,'CHƠI LẠI (R)',g.w/2,this.overlayButton.y+22,16,'#24313b',1000);
+    ctx.restore();
+  }
+}
+
+class Game {
+  constructor(canvas) {
+    this.canvas = canvas; this.ctx = canvas.getContext('2d', { alpha:false }); this.dpr = 1; this.w = 0; this.h = 0;
+    this.audio = new AudioSystem(); this.board = new Board(this); this.particles = new ParticleSystem(this); this.projectiles = new ProjectilePool(this); this.resourceSystem = new ResourceSystem(this); this.fusionSystem = new FusionSystem(this); this.ui = new UI(this);
+    this.mouse = {x:0,y:0,down:false}; this.keys = {};
+    this.reset('title'); this.bindEvents(); this.resize(); this.lastTs = performance.now(); requestAnimationFrame(t=>this.loop(t));
+  }
+  reset(state='playing') {
+    this.state = state; this.paused = false; this.time = 0; this.runTime = 0; this.speed = BALANCE.defaultSpeed;
+    this.lumen = BALANCE.initialLumen;
+    this.plants = Array.from({length:GRID.rows},()=>Array(GRID.cols).fill(null));
+    this.enemies = []; this.enemyProjectiles = []; this.beams = []; this.laneSavers = Array(GRID.rows).fill(true); this.laneSaverFx = [];
+    this.cardCooldowns = {}; for (const id of CARD_IDS) this.cardCooldowns[id] = 0;
+    this.selectedCard = null; this.selectedCell = null; this.fusionMode = false; this.fusionFirst = null; this.dragSource = null; this.dragHoverPlant = null; this.draggingPlant = false; this.dragStart = null;
+    this.hoverCard = null; this.messages = []; this.warningTimer = 0; this.screenShake = 0; this.stats = {kills:0,fusions:0};
+    this.waveManager = new WaveManager(this); this.resourceSystem.reset(); this.projectiles.reset(); this.particles.items = []; this.particles.pool = []; this.enemyProjectiles = [];
+    if (state === 'title') { this.waveManager.waitTimer = 9999; }
+  }
+  startGame() { this.reset('playing'); this.audio.ensure(); this.toast('Bảo vệ Cổng Lumen!', '#fff2a3', 2.2); }
+  bindEvents() {
+    window.addEventListener('resize', () => this.resize());
+    this.canvas.addEventListener('pointerdown', e => this.onPointerDown(e));
+    window.addEventListener('pointermove', e => this.onPointerMove(e));
+    window.addEventListener('pointerup', e => this.onPointerUp(e));
+    window.addEventListener('keydown', e => this.onKeyDown(e));
+    this.canvas.addEventListener('contextmenu', e => e.preventDefault());
+  }
+  resize() {
+    this.dpr = Math.max(1, Math.min(2.25, window.devicePixelRatio || 1));
+    this.w = Math.floor(window.innerWidth); this.h = Math.floor(window.innerHeight);
+    this.canvas.width = Math.floor(this.w * this.dpr); this.canvas.height = Math.floor(this.h * this.dpr);
+    this.canvas.style.width = this.w + 'px'; this.canvas.style.height = this.h + 'px';
+    this.ctx.setTransform(this.dpr,0,0,this.dpr,0,0);
+    this.board.layout(this.w, this.h);
+  }
+  loop(ts) {
+    const rawDt = Math.min(0.05, (ts - this.lastTs) / 1000 || 0.016); this.lastTs = ts;
+    if (this.state === 'playing' && !this.paused) this.update(rawDt * this.speed, rawDt);
+    else this.particles.update(rawDt);
+    this.render(); requestAnimationFrame(t=>this.loop(t));
+  }
+  update(dt, realDt) {
+    this.time += dt; this.runTime += realDt;
+    this.warningTimer = Math.max(0, this.warningTimer - realDt);
+    this.screenShake = Math.max(0, this.screenShake - realDt * 18);
+    for (const id of CARD_IDS) this.cardCooldowns[id] = Math.max(0, (this.cardCooldowns[id] || 0) - dt);
+    this.messages = this.messages.filter(m => (m.life -= realDt) > 0);
+    this.resourceSystem.update(dt);
+    this.waveManager.update(dt);
+    for (const row of this.plants) for (const p of row) if (p) p.update(dt);
+    for (const e of this.enemies) e.update(dt);
+    this.projectiles.update(dt);
+    for (let i=this.enemyProjectiles.length-1;i>=0;i--) if (!this.enemyProjectiles[i].update(dt)) this.enemyProjectiles.splice(i,1);
+    for (let i=this.beams.length-1;i>=0;i--) { this.beams[i].life -= dt; if (this.beams[i].life <= 0) this.beams.splice(i,1); }
+    this.particles.update(dt);
+    this.enemies = this.enemies.filter(e => e.active && !e.dead);
+    this.checkLaneBreaches();
+  }
+  render() {
+    const ctx = this.ctx;
+    ctx.setTransform(this.dpr,0,0,this.dpr,0,0);
+    ctx.clearRect(0,0,this.w,this.h);
+    const sx = this.screenShake ? rand(-this.screenShake,this.screenShake) : 0;
+    const sy = this.screenShake ? rand(-this.screenShake,this.screenShake) : 0;
+    ctx.save(); ctx.translate(sx, sy);
+    this.board.render(ctx);
+    this.renderLaneSaverFx(ctx);
+    // cell highlights
+    this.renderCellHighlights(ctx);
+    // entities sorted by y for readable overlap
+    for (let r=0;r<GRID.rows;r++) {
+      for (let c=0;c<GRID.cols;c++) { const p = this.plants[r][c]; if (p) p.render(ctx); }
+      for (const e of this.enemies) if (e.row === r) e.render(ctx);
+    }
+    this.projectiles.render(ctx);
+    for (const ep of this.enemyProjectiles) ep.render(ctx);
+    this.renderBeams(ctx);
+    this.resourceSystem.render(ctx);
+    this.particles.render(ctx);
+    if (this.dragSource && this.draggingPlant) this.renderDragGhost(ctx);
+    ctx.restore();
+    this.ui.render(ctx);
+    this.renderMessages(ctx);
+    this.renderWarning(ctx);
+  }
+  renderCellHighlights(ctx) {
+    if (this.state !== 'playing') return;
+    const b = this.board;
+    const cell = b.cellAt(this.mouse.x, this.mouse.y);
+    ctx.save();
+    if (cell) {
+      const r = b.cellRect(cell.row, cell.col);
+      ctx.strokeStyle = this.selectedCard && !this.plants[cell.row][cell.col] ? '#ffe86d' : 'rgba(255,255,255,0.55)';
+      ctx.lineWidth = 3; strokeRoundRect(ctx, r.x+4, r.y+4, r.w-8, r.h-8, 12);
+    }
+    if (this.fusionFirst) {
+      const r = b.cellRect(this.fusionFirst.row, this.fusionFirst.col);
+      ctx.globalAlpha = 0.85 + Math.sin(this.time*7)*0.15; ctx.strokeStyle = '#fff08a'; ctx.lineWidth = 4; strokeRoundRect(ctx, r.x+6, r.y+6, r.w-12, r.h-12, 16);
+    }
+    ctx.restore();
+  }
+  renderDragGhost(ctx) {
+    const p = this.dragSource; if (!p) return;
+    ctx.save(); ctx.globalAlpha = 0.55; drawPlantShape(ctx, p.def, this.mouse.x, this.mouse.y, this.board.cell, this.time, 0, 0, p.def.visual.fusion ? 0.4 : 0); ctx.restore();
+    ctx.save(); ctx.strokeStyle = '#fff2a3'; ctx.lineWidth = 2; ctx.setLineDash([6,5]); ctx.beginPath(); ctx.moveTo(p.x, p.y); ctx.lineTo(this.mouse.x, this.mouse.y); ctx.stroke(); ctx.restore();
+  }
+  renderBeams(ctx) {
+    ctx.save(); ctx.lineCap='round';
+    for (const b of this.beams) {
+      const t = clamp(b.life / b.maxLife, 0, 1);
+      ctx.globalAlpha = b.pulse ? 0.22*t : 0.75*t;
+      ctx.strokeStyle = b.color; ctx.lineWidth = (b.width || 3) * (b.pulse ? (1 + (1-t)*1.6) : 1);
+      ctx.beginPath(); ctx.moveTo(b.x1,b.y1); ctx.lineTo(b.x2,b.y2); ctx.stroke();
+      ctx.globalAlpha = b.pulse ? 0.08*t : 0.18*t;
+      ctx.lineWidth = (b.width || 3) * 3; ctx.beginPath(); ctx.moveTo(b.x1,b.y1); ctx.lineTo(b.x2,b.y2); ctx.stroke();
+    }
+    ctx.restore();
+  }
+  renderLaneSaverFx(ctx) {
+    const dt = 1/60;
+    ctx.save();
+    for (let i=this.laneSaverFx.length-1;i>=0;i--) {
+      const fx = this.laneSaverFx[i]; fx.life -= dt; const t = clamp(fx.life / fx.maxLife,0,1);
+      const y = this.board.laneY(fx.row), x0 = this.board.x - this.board.cell*0.72, x1 = this.board.x + this.board.w + this.board.cell*0.7;
+      ctx.globalAlpha = t;
+      ctx.strokeStyle = '#9ffaff'; ctx.lineWidth = 14 * t; ctx.lineCap='round'; ctx.beginPath(); ctx.moveTo(x0,y); ctx.lineTo(x1,y); ctx.stroke();
+      ctx.strokeStyle = '#ffffff'; ctx.lineWidth = 4 * t; ctx.beginPath(); ctx.moveTo(x0,y); ctx.lineTo(lerp(x0,x1,1-t*0.35),y); ctx.stroke();
+      if (fx.life <= 0) this.laneSaverFx.splice(i,1);
+    }
+    ctx.restore();
+  }
+  renderMessages(ctx) {
+    ctx.save();
+    for (let i=0;i<this.messages.length;i++) {
+      const m = this.messages[i], t=clamp(m.life/m.maxLife,0,1);
+      ctx.globalAlpha = clamp(t*1.4,0,1);
+      drawCentered(ctx, m.text, this.w/2, 92 + i*26 - (1-t)*16, 18, m.color, 900);
+    }
+    ctx.restore();
+  }
+  renderWarning(ctx) {
+    if (this.warningTimer <= 0) return;
+    ctx.save();
+    const a = Math.sin(this.warningTimer*10) > 0 ? 0.55 : 0.25;
+    ctx.globalAlpha = a; ctx.fillStyle = '#ff6e56'; ctx.fillRect(0,74,this.w,4); ctx.fillRect(0,this.h-136,this.w,4);
+    ctx.globalAlpha = 1; drawCentered(ctx,'ĐỢT LỚN ĐANG ĐẾN',this.w/2,128,24,'#ffec8a',1000);
+    ctx.restore();
+  }
+  spawnEnemy(id, row, x=null, summoned=false) {
+    const spawnX = x ?? (this.board.x + this.board.w + this.board.cell * rand(0.65, 1.15));
+    const e = new Enemy(this, id, clamp(row,0,GRID.rows-1), spawnX);
+    if (summoned) e.hp *= 0.72, e.maxHp = e.hp;
+    this.enemies.push(e);
+    return e;
+  }
+  addLumen(amount, x, y, tiny=false) {
+    this.lumen += Math.max(0, Math.floor(amount));
+    this.particles.text(x, y, '+' + Math.floor(amount), tiny ? '#fff2a3' : '#ffe86d', tiny ? 12 : 15);
+  }
+  damageEnemy(enemy, amount, effects, source, projectile=false) {
+    if (!enemy || enemy.dead) return;
+    const wasAlive = enemy.hp > 0;
+    enemy.takeDamage(amount, effects, projectile);
+    if (wasAlive && enemy.dead) this.stats.kills++;
+  }
+  damageEnemiesInRadius(x, y, radius, amount, effects, source) {
+    const r2 = radius*radius;
+    for (const e of this.enemies) {
+      if (!e.active || e.dead) continue;
+      const d2 = dist2(x,y,e.x,e.y);
+      if (d2 <= r2) {
+        const falloff = 0.65 + 0.35 * (1 - Math.sqrt(d2)/radius);
+        this.damageEnemy(e, amount * falloff, effects, source, false);
+      }
+    }
+  }
+  findTargetInLane(row, plantX, rangeCols) {
+    const maxX = plantX + rangeCols * this.board.cell;
+    let best = null;
+    for (const e of this.enemies) {
+      if (!e.active || e.dead || e.row !== row) continue;
+      if (e.x >= plantX - 10 && e.x <= maxX) if (!best || e.x < best.x) best = e;
+    }
+    return best;
+  }
+  getBlockingPlant(enemy) {
+    const row = this.plants[enemy.row];
+    for (let c=GRID.cols-1;c>=0;c--) {
+      const p = row[c]; if (!p || p.dead) continue;
+      const pc = this.board.cellCenter(enemy.row, c);
+      if (enemy.x <= pc.x + this.board.cell*0.43 && enemy.x >= pc.x - this.board.cell*0.48) return p;
+    }
+    return null;
+  }
+  findPlantForRangedEnemy(enemy) {
+    let best = null, bestD = Infinity;
+    const maxD = (enemy.def.range || 2.5) * this.board.cell;
+    for (let c=GRID.cols-1;c>=0;c--) {
+      const p = this.plants[enemy.row][c]; if (!p || p.dead) continue;
+      const d = enemy.x - p.x;
+      if (d > 0 && d < maxD && d < bestD) { best = p; bestD = d; }
+    }
+    return best;
+  }
+  getAttackRateMultiplier(plant) {
+    let mult = 1;
+    for (let r=0;r<GRID.rows;r++) for (let c=0;c<GRID.cols;c++) {
+      const p = this.plants[r][c]; if (!p || p === plant || !p.def.auraAttack) continue;
+      const dx = Math.abs(c - plant.col), dy = Math.abs(r - plant.row);
+      const range = p.def.auraRadius || 1.2;
+      if (Math.sqrt(dx*dx + dy*dy) <= range) mult += p.def.auraAttack;
+    }
+    return clamp(mult, 0.6, 2.2);
+  }
+  checkLaneBreaches() {
+    for (const e of this.enemies) {
+      if (!e.active || e.dead) continue;
+      if (e.x < this.board.x - this.board.cell*0.55) {
+        if (this.laneSavers[e.row]) {
+          this.activateLaneSaver(e.row);
+          break;
+        } else {
+          this.defeat();
+          break;
+        }
+      }
+    }
+  }
+  activateLaneSaver(row) {
+    this.laneSavers[row] = false;
+    this.laneSaverFx.push({row, life:0.7, maxLife:0.7});
+    for (const e of this.enemies) if (e.row === row) this.damageEnemy(e, BALANCE.laneSaverDamage, {}, null, false);
+    this.particles.burst(this.board.x, this.board.laneY(row), '#9ffaff', 34, 180, {life:0.55});
+    this.screenShake = Math.max(this.screenShake, 8);
+    this.toast(`Lăng Kính Cứu Nguy lane ${row+1} đã kích hoạt`, '#9ffaff', 2.2);
+    this.audio.play('explosion');
+  }
+  victory() { if (this.state !== 'playing') return; this.state = 'victory'; this.audio.play('victory'); this.toast('Victory!', '#aaff9b', 3); }
+  defeat() { if (this.state !== 'playing') return; this.state = 'defeat'; this.audio.play('defeat'); this.toast('Defeat', '#ff8d82', 3); }
+  toast(text, color='#fff', life=1.6) { this.messages.unshift({text, color, life, maxLife:life}); if (this.messages.length > 5) this.messages.pop(); }
+  getSelectedPlant() { return this.selectedCell ? this.plants[this.selectedCell.row]?.[this.selectedCell.col] : null; }
+  selectCard(id) {
+    if (this.state !== 'playing') return;
+    this.selectedCard = id; this.selectedCell = null; this.fusionMode = false; this.fusionFirst = null;
+  }
+  tryPlacePlant(id, row, col) {
+    const def = PLANT_DEFS[id];
+    if (!def) return false;
+    if (this.plants[row][col]) { this.toast('Ô đã có plant', '#ffb4a5', 1.1); this.audio.play('invalid'); return false; }
+    if (this.lumen < def.cost) { this.toast('Không đủ Lumen', '#ffb4a5', 1.1); this.audio.play('invalid'); return false; }
+    if ((this.cardCooldowns[id] || 0) > 0) { this.toast('Plant đang hồi', '#ffb4a5', 1.1); this.audio.play('invalid'); return false; }
+    this.lumen -= def.cost; this.cardCooldowns[id] = def.cooldown;
+    const p = new Plant(this, id, row, col); this.plants[row][col] = p;
+    this.selectedCell = {row,col};
+    this.particles.burst(p.x, p.y, def.visual.c1, 14, 65, {life:0.36}); this.audio.play('place');
+    return true;
+  }
+  sellSelectedPlant() {
+    const p = this.getSelectedPlant(); if (!p) return;
+    const baseCost = PLANT_DEFS[p.id]?.cost || 140;
+    const refund = Math.floor(baseCost * BALANCE.plantRefundRate + (p.def.visual.fusion ? 35 : 0));
+    this.addLumen(refund, p.x, p.y - 20);
+    this.plants[p.row][p.col] = null; this.selectedCell = null; this.audio.play('collect'); this.particles.burst(p.x,p.y,'#ffe86d',14,70,{life:0.35});
+  }
+  startFusionFromSelection() {
+    const p = this.getSelectedPlant();
+    if (!p) return;
+    this.fusionMode = true; this.fusionFirst = p; this.selectedCard = null;
+    this.toast(`Chọn plant thứ hai để fusion với ${p.def.short}`, '#fff2a3', 1.6); this.audio.play('click');
+  }
+  togglePause() { if (this.state === 'playing') this.paused = !this.paused; }
+  screenToCanvas(e) {
+    const rect = this.canvas.getBoundingClientRect(); return {x:e.clientX - rect.left, y:e.clientY - rect.top};
+  }
+  onPointerDown(e) {
+    const m = this.screenToCanvas(e); this.mouse.x=m.x; this.mouse.y=m.y; this.mouse.down=true; this.audio.ensure();
+    if (this.ui.handleDown(m.x,m.y)) return;
+    if (this.state !== 'playing' || this.paused) return;
+    if (this.resourceSystem.collectAt(m.x, m.y)) return;
+    const cell = this.board.cellAt(m.x,m.y);
+    if (!cell) { this.selectedCell = null; this.selectedCard = null; this.fusionMode=false; this.fusionFirst=null; return; }
+    const plant = this.plants[cell.row][cell.col];
+    if (this.fusionMode && this.fusionFirst && plant && plant !== this.fusionFirst) {
+      if (this.fusionSystem.fuse(this.fusionFirst, plant)) this.stats.fusions++;
+      return;
+    }
+    if (plant) {
+      this.selectedCell = cell; this.selectedCard = null; this.dragSource = plant; this.dragStart = {x:m.x,y:m.y}; this.draggingPlant = false;
+      if (this.fusionMode && !this.fusionFirst) this.fusionFirst = plant;
+      return;
+    }
+    if (this.selectedCard) this.tryPlacePlant(this.selectedCard, cell.row, cell.col);
+  }
+  onPointerMove(e) {
+    const m = this.screenToCanvas(e); this.mouse.x=m.x; this.mouse.y=m.y; this.ui.handleMove(m.x,m.y);
+    this.hoverCard = null;
+    for (const card of this.ui.cards) if (contains(card.rect, m.x, m.y)) this.hoverCard = card.id;
+    this.dragHoverPlant = null;
+    if (this.dragSource && this.dragStart) {
+      if (dist2(m.x,m.y,this.dragStart.x,this.dragStart.y) > 64) this.draggingPlant = true;
+      if (this.draggingPlant) {
+        const cell = this.board.cellAt(m.x,m.y);
+        if (cell) {
+          const p = this.plants[cell.row][cell.col];
+          if (p && p !== this.dragSource) this.dragHoverPlant = p;
+        }
+      }
+    }
+  }
+  onPointerUp(e) {
+    const m = this.screenToCanvas(e); this.mouse.x=m.x; this.mouse.y=m.y; this.mouse.down=false; this.ui.handleUp();
+    if (this.state !== 'playing') { this.dragSource=null; return; }
+    if (this.dragSource && this.draggingPlant) {
+      const cell = this.board.cellAt(m.x,m.y);
+      const target = cell ? this.plants[cell.row][cell.col] : null;
+      if (target && target !== this.dragSource) {
+        if (this.fusionSystem.fuse(this.dragSource, target)) this.stats.fusions++;
+      } else { this.toast('Thả lên plant tương thích để fusion', '#ffb4a5', 1.1); this.audio.play('invalid'); }
+    }
+    this.dragSource=null; this.dragHoverPlant=null; this.draggingPlant=false; this.dragStart=null;
+  }
+  onKeyDown(e) {
+    if (e.repeat) return;
+    if (e.code === 'Space') { e.preventDefault(); this.togglePause(); this.audio.play('click'); }
+    if (e.key === 'r' || e.key === 'R') { if (this.state !== 'title') this.startGame(); }
+    if (e.key === 'Escape') { this.selectedCard=null; this.selectedCell=null; this.fusionMode=false; this.fusionFirst=null; }
+    if (e.key === 'f' || e.key === 'F') {
+      if (this.state === 'playing') {
+        if (this.getSelectedPlant()) this.startFusionFromSelection();
+        else { this.fusionMode = !this.fusionMode; this.fusionFirst = null; this.toast(this.fusionMode?'Chọn plant đầu tiên để fusion':'Đã tắt fusion', '#fff2a3', 1.2); }
+      }
+    }
+    const n = parseInt(e.key, 10);
+    if (n >= 1 && n <= 9 && CARD_IDS[n-1]) this.selectCard(CARD_IDS[n-1]);
+  }
+}
+
+const game = new Game(document.getElementById('game'));
+window.__LUMENROOT_GAME__ = game;
+})();
+</script>
+</body>
+</html>
