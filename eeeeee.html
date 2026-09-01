@@ -1,0 +1,3451 @@
+<!doctype html>
+<html lang="vi">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+  <title>DARTHUNT MOBA (Offline Canvas)</title>
+  <style>
+    html, body { margin:0; padding:0; height:100%; background:#0b0f14; overflow:hidden; }
+    canvas { display:block; width:100vw; height:100vh; outline:none; touch-action:none; -webkit-user-select:none; user-select:none; }
+    html, body { overscroll-behavior:none; }
+  </style>
+</head>
+<body>
+<canvas id="c" tabindex="0"></canvas>
+
+<script>
+/* =========================================================
+   CONFIG (DỄ CHỈNH)
+   ========================================================= */
+const CONFIG = {
+  matchSeconds: 300,
+  minionWaveSeconds: 20,
+  respawnSeconds: 3,
+  difficulty: "Normal", // "Easy" | "Normal" | "Hard"
+  lanes: 3,
+  soundVolume: 0.4,
+  playerAutoFireHoldJ: true
+};
+
+// === Comment: CHỈNH THÔNG SỐ CÂN BẰNG Ở ĐÂY ===
+const TUNING = {
+  worldW: 3000,
+  worldH: 1800,
+
+  // Player (Thợ Săn Phi Tiêu)
+  player: {
+    hp: 640, mana: 320, move: 265,
+    atkDmg: 26, atkRange: 520, atkSpeed: 2.2,
+    projSpeed: 860, projRange: 520,
+    windup: 0.08,
+    passiveN: 3,
+    passiveBonusDmg: 10,
+    passiveDoubleShot: true
+  },
+
+  // Generic Ranged AI (kit băng/cấu rỉa)
+  ai: {
+    hp: 610, mana: 340, move: 250,
+    atkDmg: 24, atkRange: 560, atkSpeed: 2.0,
+    projSpeed: 820, projRange: 560,
+    windup: 0.09
+  },
+
+  // Level scaling
+  level: {
+    xpPerSecond: 2.2,
+    xpMinionNearby: 12,
+    xpMinionLastHitBonus: 14,
+    xpTower: 180,
+    xpCore: 500,
+    hpPerLevel: 55,
+    dmgPerLevel: 4,
+    manaPerLevel: 18,
+  },
+
+  // Minions
+  minion: {
+    melee: { hp: 160, dmg: 14, move: 170, range: 45, atkSpeed: 1.0 },
+    ranged:{ hp: 120, dmg: 12, move: 165, range: 360, atkSpeed: 0.9, projSpeed: 520, projRange: 380 },
+    aggroRange: 420,
+    leashRange: 720,
+    bodyR: 14,
+  },
+
+  // Towers / Core
+  tower: {
+    hp: 1200,
+    range: 560,
+    dmg: 46,
+    atkSpeed: 0.85,
+    projSpeed: 760,
+    projRange: 600,
+    aggroSwapSeconds: 2.0
+  },
+  core: {
+    hp: 2500,
+    range: 650,
+    dmg: 58,
+    atkSpeed: 0.75,
+    projSpeed: 820,
+    projRange: 720
+  },
+
+  // Skills (Player)
+  skill: {
+    rapid: { cd: 7.0, cost: 55, dur: 1.5, atkMult: 1.85, burst: 3, burstSpread: 0.12, burstDmgMult: 0.65 },
+    roll:  { cd: 8.0, cost: 40, dist: 230, time: 0.22, iframes: 0.18 },
+    mark:  { cd: 10.0, cost: 70, dmg: 52, slowDur: 0.8, slowPct: 0.25, markDur: 4.0, amp: 0.25, projSpeed: 980, projRange: 720 },
+    ult:   { cd: 26.0, cost: 120, channel: 0.55, dur: 0.75, shots: 10, width: 230, len: 860, dmg: 24, pierceMinions: 2 }
+  },
+
+  // Skills (AI kit)
+  aiSkill: {
+    slowShot: { cd: 7.5, cost: 55, dmg: 44, slowDur: 1.2, slowPct: 0.35, projSpeed: 930, projRange: 760 },
+    dashBack:{ cd: 9.0, cost: 45, dist: 220, time: 0.22 },
+    trap:    { cd: 12.0, cost: 70, dmg: 34, arm: 0.35, dur: 10.0, r: 40, rootDur: 0.85 },
+    ult:     { cd: 28.0, cost: 130, channel: 0.6, dmg: 64, width: 24, len: 980, speed: 1150, pierce: 999 }
+  },
+
+  pools: { projectiles: 520, particles: 700 },
+
+  ui: { minimapW: 240, minimapH: 150, safePad: 14 }
+};
+
+/* =========================================================
+   // Utils
+   ========================================================= */
+const U = {
+  clamp(v,a,b){ return Math.max(a, Math.min(b, v)); },
+  lerp(a,b,t){ return a + (b-a)*t; },
+  len(x,y){ return Math.hypot(x,y); },
+  norm(x,y){
+    const l = Math.hypot(x,y);
+    return l > 1e-6 ? [x/l, y/l] : [0,0];
+  },
+  dist2(ax,ay,bx,by){ const dx=ax-bx, dy=ay-by; return dx*dx+dy*dy; },
+  rand(a=0,b=1){ return a + Math.random()*(b-a); },
+  now(){ return performance.now()/1000; },
+  expSmoothing(dt, k){ return 1 - Math.exp(-dt*k); },
+  circleHit(ax,ay,ar, bx,by,br){
+    return U.dist2(ax,ay,bx,by) <= (ar+br)*(ar+br);
+  }
+};
+
+function rotate(x,y,a){
+  const c=Math.cos(a), s=Math.sin(a);
+  return [x*c - y*s, x*s + y*c];
+}
+function easeOutCubic(t){ return 1 - Math.pow(1-t,3); }
+function lerpPoint(a,b,t){ return { x: U.lerp(a.x,b.x,t), y: U.lerp(a.y,b.y,t) }; }
+
+/* =========================================================
+   // Core
+   ========================================================= */
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d', { alpha:false });
+
+let DPR=1, W=0, H=0;
+function resize(){
+  DPR = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+  W = Math.floor(innerWidth);
+  H = Math.floor(innerHeight);
+  canvas.width = Math.floor(W*DPR);
+  canvas.height = Math.floor(H*DPR);
+  ctx.setTransform(DPR,0,0,DPR,0,0);
+}
+addEventListener('resize', resize, {passive:true});
+resize();
+
+const GAME = {
+  state: "MENU", // MENU, HOWTO, PLAYING, PAUSED, ENDED
+  t: 0,
+  dt: 0,
+  matchLeft: CONFIG.matchSeconds,
+  winner: null,
+
+  camX: 0, camY: 0,
+  camFollow: true,
+
+  heroes: [],
+  minions: [],
+  towers: [],
+  cores: [],
+  traps: [],
+
+  projPool: [],
+  partPool: [],
+
+  kills: { team0:0, team1:0 },
+
+  msgQueue: [],
+  nextWaveAt: 0,
+  nextId: 1,
+
+  menuIndex: 0,
+  menuDifficultyIndex: 1
+};
+function allocId(){ return GAME.nextId++; }
+
+/* =========================================================
+   // Input
+   ========================================================= */
+const Input = {
+  keys: Object.create(null),
+  just: Object.create(null),
+  mouseX: 0, mouseY: 0,
+  mouseDown: false,
+
+  // Mobile / touch controls
+  touch: {
+    moveId: null,
+    moveX: 0, moveY: 0,
+    attackId: null,
+    attack: false
+  }
+};
+
+function keyName(e){ return e.code || e.key; }
+function onKeyDown(e){
+  Audio.ensure();
+  const k = keyName(e);
+  if (!Input.keys[k]) Input.just[k] = true;
+  Input.keys[k] = true;
+
+  if (["Space","ArrowUp","ArrowDown","ArrowLeft","ArrowRight"].includes(k)) e.preventDefault();
+  if (["KeyJ","KeyK","KeyL","KeyU","KeyI","Escape","Enter","KeyR"].includes(k)) e.preventDefault();
+}
+function onKeyUp(e){
+  const k = keyName(e);
+  Input.keys[k] = false;
+  Input.just[k] = false;
+}
+addEventListener('keydown', onKeyDown, {passive:false});
+addEventListener('keyup', onKeyUp, {passive:true});
+
+canvas.addEventListener('mousemove', (e)=>{
+  const r = canvas.getBoundingClientRect();
+  Input.mouseX = e.clientX - r.left;
+  Input.mouseY = e.clientY - r.top;
+});
+canvas.addEventListener('mousedown', ()=>{ Input.mouseDown=true; });
+addEventListener('mouseup', ()=>{ Input.mouseDown=false; });
+
+/* =========================================================
+   // Mobile / Touch controls
+   // Left: virtual joystick
+   // Right: Attack + K/L/U/I skill buttons
+   ========================================================= */
+function isTouchDevice(){
+  return (navigator.maxTouchPoints || 0) > 0 || window.matchMedia("(pointer:coarse)").matches;
+}
+
+function mobileControlLayout(){
+  const compact = Math.min(W,H) < 520;
+  const r = compact ? 58 : 68;
+  const gap = compact ? 12 : 16;
+  const bottom = compact ? 92 : 108;
+  return {
+    joystick: { x: Math.max(r+18, 92), y: H-bottom, r },
+    attack:   { x: W-86, y: H-bottom+4, r: compact ? 38 : 46 },
+    skillR:   compact ? 31 : 38,
+    skillGap: compact ? 8 : 12
+  };
+}
+
+function mobileSkillRects(){
+  const L = mobileControlLayout();
+  const r = L.skillR, g = L.skillGap;
+  const ay = L.attack.y;
+  return {
+    K:{x:W-210, y:ay-54, r},
+    L:{x:W-210+(r*2+g), y:ay-54, r},
+    U:{x:W-210+(r*2+g)*2, y:ay-54, r},
+    I:{x:W-210+(r*2+g)*3, y:ay-54, r}
+  };
+}
+
+function touchDist(x1,y1,x2,y2){ return Math.hypot(x1-x2,y1-y2); }
+
+function touchInsideCircle(x,y,c){
+  return touchDist(x,y,c.x,c.y) <= c.r;
+}
+
+function updateTouchMove(x,y){
+  const L = mobileControlLayout();
+  const dx = x - L.joystick.x;
+  const dy = y - L.joystick.y;
+  const d = Math.hypot(dx,dy);
+  const max = L.joystick.r;
+  const k = d > max ? max/d : 1;
+  Input.touch.moveX = dx*k/max;
+  Input.touch.moveY = dy*k/max;
+}
+
+function clearTouchMove(){
+  Input.touch.moveId = null;
+  Input.touch.moveX = 0;
+  Input.touch.moveY = 0;
+}
+
+function touchButtonAt(x,y){
+  const L = mobileControlLayout();
+  if (touchInsideCircle(x,y,L.attack)) return "ATTACK";
+  const skills = mobileSkillRects();
+  for (const k of ["K","L","U","I"]){
+    if (touchInsideCircle(x,y,skills[k])) return k;
+  }
+  return null;
+}
+
+canvas.addEventListener("pointerdown", (e)=>{
+  if (!isTouchDevice() || GAME.state!=="PLAYING") return;
+  e.preventDefault();
+  Audio.ensure();
+  const r = canvas.getBoundingClientRect();
+  const x = e.clientX-r.left, y=e.clientY-r.top;
+  const L = mobileControlLayout();
+
+  if (touchInsideCircle(x,y,L.joystick) && Input.touch.moveId===null){
+    Input.touch.moveId=e.pointerId;
+    canvas.setPointerCapture?.(e.pointerId);
+    updateTouchMove(x,y);
+    return;
+  }
+
+  const b = touchButtonAt(x,y);
+  if (b==="ATTACK" && Input.touch.attackId===null){
+    Input.touch.attackId=e.pointerId;
+    Input.touch.attack=true;
+    canvas.setPointerCapture?.(e.pointerId);
+    return;
+  }
+
+  const player = GAME.heroes[0];
+  if (player && b){
+    const now=U.now();
+    if (b==="K") castPlayerSkillK(player,now);
+    if (b==="L") castPlayerSkillL(player,now);
+    if (b==="U") castPlayerSkillU(player,now);
+    if (b==="I") castPlayerSkillI(player,now);
+    return;
+  }
+
+  // Tap top-right to pause.
+  if (x > W-64 && y < 64){
+    GAME.state="PAUSED";
+    return;
+  }
+});
+
+canvas.addEventListener("pointermove", (e)=>{
+  if (!isTouchDevice()) return;
+  const r=canvas.getBoundingClientRect();
+  const x=e.clientX-r.left, y=e.clientY-r.top;
+  if (e.pointerId===Input.touch.moveId){
+    e.preventDefault();
+    updateTouchMove(x,y);
+  }
+});
+
+function endTouchPointer(e){
+  if (e.pointerId===Input.touch.moveId) clearTouchMove();
+  if (e.pointerId===Input.touch.attackId){
+    Input.touch.attackId=null;
+    Input.touch.attack=false;
+  }
+}
+canvas.addEventListener("pointerup", endTouchPointer);
+canvas.addEventListener("pointercancel", endTouchPointer);
+canvas.addEventListener("pointerleave", (e)=>{
+  // Keep a captured joystick/attack active; otherwise nothing to clear.
+  if (e.pointerId===Input.touch.moveId || e.pointerId===Input.touch.attackId) return;
+});
+
+function drawMobileControls(){
+  if (!isTouchDevice() || GAME.state!=="PLAYING") return;
+
+  const L=mobileControlLayout();
+  const ctxAlpha=ctx.globalAlpha;
+  ctx.save();
+  ctx.globalAlpha=0.78;
+
+  // Joystick base
+  ctx.beginPath();
+  ctx.arc(L.joystick.x,L.joystick.y,L.joystick.r,0,Math.PI*2);
+  ctx.fillStyle="rgba(255,255,255,0.10)";
+  ctx.fill();
+  ctx.lineWidth=3;
+  ctx.strokeStyle="rgba(255,255,255,0.28)";
+  ctx.stroke();
+
+  const kx=L.joystick.x + Input.touch.moveX*L.joystick.r*0.72;
+  const ky=L.joystick.y + Input.touch.moveY*L.joystick.r*0.72;
+  ctx.beginPath();
+  ctx.arc(kx,ky,L.joystick.r*0.42,0,Math.PI*2);
+  ctx.fillStyle="rgba(255,211,109,0.55)";
+  ctx.fill();
+  ctx.strokeStyle="rgba(255,255,255,0.30)";
+  ctx.stroke();
+
+  // Attack
+  ctx.beginPath();
+  ctx.arc(L.attack.x,L.attack.y,L.attack.r,0,Math.PI*2);
+  ctx.fillStyle=Input.touch.attack ? "rgba(255,211,109,0.78)" : "rgba(255,211,109,0.38)";
+  ctx.fill();
+  ctx.lineWidth=3;
+  ctx.strokeStyle="rgba(255,255,255,0.42)";
+  ctx.stroke();
+  ctx.fillStyle="#10151b";
+  ctx.font="bold 18px sans-serif";
+  ctx.textAlign="center";
+  ctx.textBaseline="middle";
+  ctx.fillText("ATK",L.attack.x,L.attack.y);
+
+  // Skills
+  const skills=mobileSkillRects();
+  const player=GAME.heroes[0];
+  const data={K:player?.cdK||0,L:player?.cdL||0,U:player?.cdU||0,I:player?.cdI||0};
+  const names={K:"K",L:"L",U:"U",I:"I"};
+  for (const k of ["K","L","U","I"]){
+    const b=skills[k];
+    ctx.beginPath();
+    ctx.arc(b.x,b.y,b.r,0,Math.PI*2);
+    ctx.fillStyle="rgba(20,26,34,0.80)";
+    ctx.fill();
+    ctx.lineWidth=2;
+    ctx.strokeStyle=data[k]<=0 ? "rgba(255,211,109,0.78)" : "rgba(255,255,255,0.22)";
+    ctx.stroke();
+    ctx.fillStyle="#e8eef7";
+    ctx.font="bold 15px sans-serif";
+    ctx.fillText(names[k],b.x,b.y-2);
+    if (data[k]>0){
+      ctx.fillStyle="#cfe8d3";
+      ctx.font="10px sans-serif";
+      ctx.fillText(Math.ceil(data[k]),b.x,b.y+13);
+    }
+  }
+
+  // Pause button
+  ctx.beginPath();
+  ctx.arc(W-28,28,20,0,Math.PI*2);
+  ctx.fillStyle="rgba(0,0,0,0.45)";
+  ctx.fill();
+  ctx.fillStyle="#e8eef7";
+  ctx.font="bold 16px sans-serif";
+  ctx.fillText("Ⅱ",W-28,28);
+
+  ctx.restore();
+  ctx.globalAlpha=ctxAlpha;
+}
+
+function consumeJust(code){
+  const v = !!Input.just[code];
+  Input.just[code] = false;
+  return v;
+}
+addEventListener('blur', ()=>{
+  for (const k in Input.keys) Input.keys[k]=false;
+  for (const k in Input.just) Input.just[k]=false;
+});
+
+/* =========================================================
+   // World/Map
+   ========================================================= */
+const World = {
+  W: TUNING.worldW,
+  H: TUNING.worldH,
+  lanes: [],
+  obstacles: [], // <-- ĐÃ XOÁ HẾT VẬT CẢN: di chuyển khắp nơi
+  brush: []
+};
+
+function buildWorld(){
+  World.W = TUNING.worldW;
+  World.H = TUNING.worldH;
+
+  // Không còn obstacles:
+  World.obstacles = [];
+
+  // Brush (tuỳ chọn: vẫn giữ, không phải vật cản)
+  World.brush = [
+    {x: 1120, y: 520,  w: 280, h: 240},
+    {x: 1640, y: 1060, w: 280, h: 240},
+    {x: 1240, y: 1240, w: 260, h: 240},
+    {x: 1520, y: 320,  w: 260, h: 240},
+  ];
+
+  const leftBaseX = 240;
+  const rightBaseX = World.W - 240;
+  const yTop = 360, yMid = World.H/2, yBot = World.H - 360;
+
+  World.lanes = [
+    { name:"TOP", y:yTop, wps: [
+      {x:leftBaseX, y:yTop}, {x:820, y:yTop}, {x:1180, y:yTop+90}, {x:1760, y:yTop+90}, {x:2220, y:yTop}, {x:rightBaseX, y:yTop}
+    ]},
+    { name:"MID", y:yMid, wps: [
+      {x:leftBaseX, y:yMid}, {x:980, y:yMid}, {x:1250, y:yMid-160}, {x:1750, y:yMid+160}, {x:2040, y:yMid}, {x:rightBaseX, y:yMid}
+    ]},
+    { name:"BOT", y:yBot, wps: [
+      {x:leftBaseX, y:yBot}, {x:820, y:yBot}, {x:1180, y:yBot-90}, {x:1760, y:yBot-90}, {x:2220, y:yBot}, {x:rightBaseX, y:yBot}
+    ]},
+  ];
+
+  buildStructures();
+}
+
+function getLaneByName(name){
+  for (const l of World.lanes) if (l.name === name) return l;
+  return World.lanes[1];
+}
+function laneWaypointsForTeam(lane, team){
+  return team === 0 ? lane.wps : [...lane.wps].reverse();
+}
+
+function buildStructures(){
+  GAME.towers.length = 0;
+  GAME.cores.length = 0;
+
+  // 2 towers per lane per side + 1 core each side
+  for (const lane of World.lanes){
+    const wps = lane.wps;
+
+    const leftT1 = lerpPoint(wps[1], wps[2], 0.40);
+    const leftT2 = lerpPoint(wps[2], wps[3], 0.30);
+
+    const rightT1 = lerpPoint(wps[3], wps[4], 0.60);
+    const rightT2 = lerpPoint(wps[2], wps[3], 0.70);
+
+    addTower(0, leftT1.x, leftT1.y, lane.name, 1);
+    addTower(0, leftT2.x, leftT2.y, lane.name, 2);
+
+    addTower(1, rightT1.x, rightT1.y, lane.name, 1);
+    addTower(1, rightT2.x, rightT2.y, lane.name, 2);
+  }
+
+  addCore(0, 180, World.H/2);
+  addCore(1, World.W-180, World.H/2);
+}
+
+function addTower(team, x, y, laneName, idx){
+  GAME.towers.push({
+    id: allocId(),
+    type: "TOWER",
+    team, lane: laneName, idx,
+    x,y, r:34,
+    hpMax: TUNING.tower.hp, hp: TUNING.tower.hp,
+    range: TUNING.tower.range,
+    dmg: TUNING.tower.dmg,
+    atkSpeed: TUNING.tower.atkSpeed,
+    atkCd: 0,
+    forcedTargetId: 0,
+    forcedUntil: 0,
+    alive: true
+  });
+}
+function addCore(team, x, y){
+  GAME.cores.push({
+    id: allocId(),
+    type: "CORE",
+    team,
+    x,y, r:54,
+    hpMax: TUNING.core.hp, hp: TUNING.core.hp,
+    range: TUNING.core.range,
+    dmg: TUNING.core.dmg,
+    atkSpeed: TUNING.core.atkSpeed,
+    atkCd: 0,
+    alive: true
+  });
+}
+
+/* =========================================================
+   // Minions
+   ========================================================= */
+function addMinion(team, kind, x, y, laneName){
+  const isR = kind === "RANGED";
+  const s = isR ? TUNING.minion.ranged : TUNING.minion.melee;
+  const lane = getLaneByName(laneName);
+  const wps = laneWaypointsForTeam(lane, team);
+
+  GAME.minions.push({
+    id: allocId(),
+    type: "MINION",
+    team, kind, lane: laneName,
+    x,y, r: TUNING.minion.bodyR,
+    hpMax: s.hp, hp: s.hp,
+    dmg: s.dmg,
+    move: s.move,
+    range: s.range,
+    atkSpeed: s.atkSpeed,
+    projSpeed: isR ? s.projSpeed : 0,
+    projRange: isR ? s.projRange : 0,
+    atkCd: 0,
+    wpIndex: 1,
+    wps,
+    targetId: 0,
+    lastDamagedByHeroId: 0,
+    lastDamagedAt: 0,
+    alive: true
+  });
+}
+
+function spawnLaneWave(lane, team){
+  const wps = laneWaypointsForTeam(lane, team);
+  const spawn = wps[0];
+  const off = (team===0 ? 1 : -1);
+
+  for (let i=0;i<3;i++){
+    addMinion(team, "MELEE", spawn.x + off*U.rand(0,16), spawn.y + U.rand(-18,18), lane.name);
+  }
+  addMinion(team, "RANGED", spawn.x + off*U.rand(0,16), spawn.y + U.rand(-18,18), lane.name);
+}
+
+function spawnWave(){
+  for (const lane of World.lanes){
+    spawnLaneWave(lane, 0);
+    spawnLaneWave(lane, 1);
+  }
+  pushMsg("Minion Wave!", 1.0);
+  Audio.play("wave");
+}
+
+function selectMinionTarget(m){
+  const team = m.team;
+  let best=null, bestD2=1e18;
+  const ag2 = TUNING.minion.aggroRange*TUNING.minion.aggroRange;
+
+  // enemy minions
+  for (const o of GAME.minions){
+    if (!o.alive || o.team===team) continue;
+    const d2 = U.dist2(m.x,m.y,o.x,o.y);
+    if (d2 <= ag2 && d2 < bestD2){ best=o; bestD2=d2; }
+  }
+  if (best) return best;
+
+  // enemy heroes
+  for (const h of GAME.heroes){
+    if (!h.alive || h.team===team) continue;
+    if (h.hidden && !isRevealedTo(m, h)) continue;
+    const d2 = U.dist2(m.x,m.y,h.x,h.y);
+    if (d2 <= ag2 && d2 < bestD2){ best=h; bestD2=d2; }
+  }
+  if (best) return best;
+
+  // towers then core
+  for (const tw of GAME.towers){
+    if (!tw.alive || tw.team===team) continue;
+    const d2 = U.dist2(m.x,m.y,tw.x,tw.y);
+    if (d2 <= ag2 && d2 < bestD2){ best=tw; bestD2=d2; }
+  }
+  for (const c of GAME.cores){
+    if (!c.alive || c.team===team) continue;
+    const d2 = U.dist2(m.x,m.y,c.x,c.y);
+    if (d2 <= ag2 && d2 < bestD2){ best=c; bestD2=d2; }
+  }
+  return best;
+}
+
+function followWaypoints(m, dt){
+  const wps = m.wps;
+  if (!wps || wps.length < 2) return;
+
+  let wp = wps[m.wpIndex] || wps[wps.length-1];
+  const d2 = U.dist2(m.x,m.y,wp.x,wp.y);
+  if (d2 < 26*26 && m.wpIndex < wps.length-1) m.wpIndex++;
+
+  wp = wps[m.wpIndex] || wps[wps.length-1];
+  const [nx,ny] = U.norm(wp.x-m.x, wp.y-m.y);
+
+  const jitter = Math.sin((m.id*7 + GAME.t*2.2))*6;
+  m.x += nx*m.move*dt;
+  m.y += ny*m.move*dt + jitter*dt*0.35;
+}
+
+function updateMinions(dt){
+  for (let i=GAME.minions.length-1;i>=0;i--){
+    const m = GAME.minions[i];
+    if (!m.alive) { GAME.minions.splice(i,1); continue; }
+    if (m.hp <= 0){
+      m.alive=false;
+      onUnitDeath(m);
+      continue;
+    }
+
+    m.atkCd = Math.max(0, m.atkCd - dt);
+
+    const target = selectMinionTarget(m);
+    if (target){
+      const d2 = U.dist2(m.x,m.y,target.x,target.y);
+      const rr = (m.range + target.r);
+      if (d2 <= rr*rr){
+        if (m.atkCd <= 0){
+          m.atkCd = 1 / m.atkSpeed;
+          if (m.kind === "MELEE"){
+            dealDamage(m, target, m.dmg, "PHYS", {melee:true});
+            spawnHitFx(target.x, target.y, m.team);
+            Audio.play("hit");
+          }else{
+            const [nx,ny] = U.norm(target.x-m.x, target.y-m.y);
+            spawnProjectile({
+              team: m.team,
+              x: m.x + nx*(m.r+6),
+              y: m.y + ny*(m.r+6),
+              vx: nx*m.projSpeed,
+              vy: ny*m.projSpeed,
+              r: 6,
+              dmg: m.dmg,
+              maxDist: m.projRange,
+              kind: "MINION_BOLT",
+              pierce: 1,
+              sourceId: m.id,
+              sourceType: "MINION"
+            });
+            Audio.play("shoot_soft");
+          }
+        }
+      }else{
+        const leash2 = TUNING.minion.leashRange*TUNING.minion.leashRange;
+        if (d2 <= leash2){
+          const [nx,ny] = U.norm(target.x-m.x, target.y-m.y);
+          m.x += nx*m.move*dt;
+          m.y += ny*m.move*dt;
+        }else{
+          followWaypoints(m, dt);
+        }
+      }
+    }else{
+      followWaypoints(m, dt);
+    }
+
+    m.x = U.clamp(m.x, 10, World.W-10);
+    m.y = U.clamp(m.y, 10, World.H-10);
+  }
+}
+
+/* =========================================================
+   // Heroes
+   ========================================================= */
+function makeHeroBase(){
+  return {
+    id: allocId(),
+    type: "HERO",
+    isPlayer: false,
+    kit: "AI", // "PLAYER" or "AI"
+    name: "Hero",
+    team: 0,
+    lane: "MID",
+
+    x:0,y:0, r:18,
+    alive:true,
+
+    hpMax:500, hp:500,
+    manaMax:300, mana:300,
+
+    level:1,
+    xp:0,
+    xpToNext:120,
+
+    move:240,
+    atkDmg:20,
+    atkRange:520,
+    atkSpeed:2.0,
+    projSpeed:820,
+    projRange:520,
+    windup:0.08,
+
+    facingX:1, facingY:0,
+    moveX:0, moveY:0,
+
+    atkCd:0,
+    windupQueued:false,
+    windupT:0,
+    queuedType:"BASIC",
+    fireHeld:false,
+
+    slowUntil:0,
+    slowPct:0,
+    rootUntil:0,
+    invulnUntil:0,
+    markedUntil:0,
+    markedAmp:0,
+
+    lastCombatAt:0,
+    brushEnterAt:0,
+    hidden:false,
+
+    cdK:0, cdL:0, cdU:0, cdI:0,
+
+    rapidUntil:0,
+    passiveHits:0,
+    passiveReady:false,
+
+    channelUntil:0,
+    ultFiringUntil:0,
+    ultShotsLeft:0,
+    _ultNextAt:0,
+
+    deadUntil:0,
+    lastDmgTakenAt:0,
+
+    _dash:null,
+    ai:null,
+    _aiUlt:null
+  };
+}
+
+function makePlayer(){
+  const h = makeHeroBase();
+  const s = TUNING.player;
+  h.isPlayer = true;
+  h.kit = "PLAYER";
+  h.name = "Thợ Săn Phi Tiêu";
+  h.team = 0;
+  h.lane = "MID";
+  h.x = 240; h.y = World.H/2;
+  h.hpMax = s.hp; h.hp=s.hp;
+  h.manaMax = s.mana; h.mana=s.mana;
+  h.move = s.move;
+  h.atkDmg = s.atkDmg;
+  h.atkRange = s.atkRange;
+  h.atkSpeed = s.atkSpeed;
+  h.projSpeed = s.projSpeed;
+  h.projRange = s.projRange;
+  h.windup = s.windup;
+  h.facingX=1; h.facingY=0;
+  return h;
+}
+
+function makeRangedAI(team, lane, name){
+  const h = makeHeroBase();
+  const s = TUNING.ai;
+  h.isPlayer = false;
+  h.kit = "AI";
+  h.name = name;
+  h.team = team;
+  h.lane = lane;
+
+  const laneY = getLaneByName(lane).y;
+  if (team === 0){
+    h.x = 260; h.y = laneY + U.rand(-26,26);
+    h.facingX=1; h.facingY=0;
+  }else{
+    h.x = World.W-260; h.y = laneY + U.rand(-26,26);
+    h.facingX=-1; h.facingY=0;
+  }
+
+  h.hpMax = s.hp; h.hp=s.hp;
+  h.manaMax = s.mana; h.mana=s.mana;
+  h.move = s.move;
+  h.atkDmg = s.atkDmg;
+  h.atkRange = s.atkRange;
+  h.atkSpeed = s.atkSpeed;
+  h.projSpeed = s.projSpeed;
+  h.projRange = s.projRange;
+  h.windup = s.windup;
+
+  h.ai = makeAIController(h, lane, true); // fixed lane
+  return h;
+}
+
+function spawnHeroes(){
+  GAME.heroes.length = 0;
+
+  // Player (team 0)
+  const player = makePlayer();
+
+  // 2 AI phe ta: 1 TOP, 1 BOT
+  const allyTop = makeRangedAI(0, "TOP", "Hộ Vệ Viễn Xạ");
+  const allyBot = makeRangedAI(0, "BOT", "Cung Thủ Gió");
+
+  // Enemy mid (đã có) + thêm 2 enemy: 1 TOP, 1 BOT
+  const enemyMid = makeRangedAI(1, "MID", "Xạ Thủ Băng");
+  const enemyTop = makeRangedAI(1, "TOP", "Xạ Thủ Sương");
+  const enemyBot = makeRangedAI(1, "BOT", "Thợ Săn Lạnh");
+
+  GAME.heroes.push(player, allyTop, allyBot, enemyMid, enemyTop, enemyBot);
+
+  // camera init
+  GAME.camX = player.x;
+  GAME.camY = player.y;
+}
+
+function respawnHero(h){
+  h.alive = true;
+  h.hp = h.hpMax;
+  h.mana = h.manaMax;
+  h.slowUntil=0; h.rootUntil=0; h.invulnUntil=0;
+  h.markedUntil=0; h.markedAmp=0;
+  h.atkCd=0;
+  h.windupQueued=false;
+  h.channelUntil=0;
+  h.ultShotsLeft=0;
+  h._ultNextAt=0;
+  h.hidden=false;
+  h.brushEnterAt=0;
+  h._dash=null;
+  h._aiUlt=null;
+
+  const laneY = getLaneByName(h.lane || "MID").y;
+  if (h.team===0){
+    h.x = 260; h.y = laneY + U.rand(-26,26);
+    if (h.isPlayer){ h.x=240; h.y=World.H/2; }
+    h.facingX=1; h.facingY=0;
+  }else{
+    h.x = World.W-260; h.y = laneY + U.rand(-26,26);
+    h.facingX=-1; h.facingY=0;
+  }
+
+  spawnExplosion(h.x,h.y,26,h.team);
+  Audio.play("respawn");
+  pushMsg(`${h.name} Respawned`, 1.1);
+}
+
+function killHero(h){
+  h.alive=false;
+  h.deadUntil = U.now() + CONFIG.respawnSeconds;
+  spawnExplosion(h.x,h.y,32,h.team);
+  Audio.play("explode_soft");
+
+  if (h.team===0) GAME.kills.team1++;
+  else GAME.kills.team0++;
+
+  pushMsg(`${h.name} Down!`, 1.4);
+}
+
+function canAct(h, now){
+  if (!h.alive) return false;
+  if (now < h.rootUntil) return false;
+  if (now < h.channelUntil) return false;
+  return true;
+}
+
+function queueWindup(h, type){
+  h.windupQueued=true;
+  h.queuedType=type;
+  h.windupT=h.windup;
+}
+
+function getAtkSpeed(h, now){
+  if (h.kit==="PLAYER" && now < h.rapidUntil) return h.atkSpeed * TUNING.skill.rapid.atkMult;
+  return h.atkSpeed;
+}
+
+function doBasicAttack(h, now){
+  h.atkCd = 1 / getAtkSpeed(h, now);
+
+  const [nx,ny] = U.norm(h.facingX,h.facingY);
+
+  if (h.kit==="PLAYER"){
+    let baseDmg = h.atkDmg;
+    let doubleShot=false;
+
+    if (h.passiveReady){
+      baseDmg += TUNING.player.passiveBonusDmg;
+      doubleShot = TUNING.player.passiveDoubleShot;
+      h.passiveReady=false;
+      h.passiveHits=0;
+      Audio.play("proc");
+      spawnPulse(h.x,h.y,22,0);
+    }
+
+    // Rapid burst
+    const rapid = now < h.rapidUntil;
+    if (rapid){
+      const b = TUNING.skill.rapid;
+      for (let i=0;i<b.burst;i++){
+        const ang = (i - (b.burst-1)/2) * b.burstSpread;
+        const [dx,dy] = rotate(nx,ny,ang);
+        spawnProjectile({
+          team: h.team,
+          x: h.x + dx*(h.r+10),
+          y: h.y + dy*(h.r+10),
+          vx: dx*h.projSpeed,
+          vy: dy*h.projSpeed,
+          r: 6,
+          dmg: baseDmg * b.burstDmgMult,
+          maxDist: h.projRange,
+          kind: "DART",
+          pierce: 1,
+          sourceId: h.id,
+          sourceType: "HERO",
+          flags: { fromPlayer:true }
+        });
+      }
+      Audio.play("shoot");
+      spawnMuzzle(h.x + nx*(h.r+8), h.y + ny*(h.r+8), 0);
+      if (doubleShot){
+        for (const s of [-0.08,0.08]){
+          const [dx,dy] = rotate(nx,ny,s);
+          spawnProjectile({
+            team: h.team,
+            x: h.x + dx*(h.r+10),
+            y: h.y + dy*(h.r+10),
+            vx: dx*h.projSpeed,
+            vy: dy*h.projSpeed,
+            r: 6,
+            dmg: baseDmg * 0.75,
+            maxDist: h.projRange,
+            kind: "DART",
+            pierce: 1,
+            sourceId: h.id,
+            sourceType: "HERO",
+            flags: { fromPlayer:true, extra:true }
+          });
+        }
+      }
+      return;
+    }
+
+    // Normal dart
+    spawnProjectile({
+      team: h.team,
+      x: h.x + nx*(h.r+10),
+      y: h.y + ny*(h.r+10),
+      vx: nx*h.projSpeed,
+      vy: ny*h.projSpeed,
+      r: 6,
+      dmg: baseDmg,
+      maxDist: h.projRange,
+      kind: "DART",
+      pierce: 1,
+      sourceId: h.id,
+      sourceType: "HERO",
+      flags: { fromPlayer:true }
+    });
+
+    if (doubleShot){
+      for (const s of [-0.08,0.08]){
+        const [dx,dy] = rotate(nx,ny,s);
+        spawnProjectile({
+          team: h.team,
+          x: h.x + dx*(h.r+10),
+          y: h.y + dy*(h.r+10),
+          vx: dx*h.projSpeed,
+          vy: dy*h.projSpeed,
+          r: 6,
+          dmg: baseDmg * 0.75,
+          maxDist: h.projRange,
+          kind: "DART",
+          pierce: 1,
+          sourceId: h.id,
+          sourceType: "HERO",
+          flags: { fromPlayer:true, extra:true }
+        });
+      }
+    }
+
+    Audio.play("shoot");
+    spawnMuzzle(h.x + nx*(h.r+8), h.y + ny*(h.r+8), 0);
+  }else{
+    // AI basic frost bolt
+    spawnProjectile({
+      team: h.team,
+      x: h.x + nx*(h.r+10),
+      y: h.y + ny*(h.r+10),
+      vx: nx*h.projSpeed,
+      vy: ny*h.projSpeed,
+      r: 7,
+      dmg: h.atkDmg,
+      maxDist: h.projRange,
+      kind: "FROST",
+      pierce: 1,
+      sourceId: h.id,
+      sourceType: "HERO",
+      flags: { fromAI:true }
+    });
+    Audio.play("shoot_soft");
+    spawnMuzzle(h.x + nx*(h.r+8), h.y + ny*(h.r+8), 1);
+  }
+}
+
+function castPlayerSkillK(h, now){
+  const s = TUNING.skill.rapid;
+  if (h.cdK>0 || h.mana<s.cost || !canAct(h,now)) { Audio.play("deny"); return; }
+  h.mana -= s.cost;
+  h.cdK = s.cd;
+  h.rapidUntil = now + s.dur;
+  pushMsg("K: Rapid Darts!", 1.0);
+  Audio.play("buff");
+  spawnPulse(h.x,h.y,34,0);
+}
+function castPlayerSkillL(h, now){
+  const s = TUNING.skill.roll;
+  if (h.cdL>0 || h.mana<s.cost) { Audio.play("deny"); return; }
+  if (now < h.channelUntil) { Audio.play("deny"); return; }
+
+  h.mana -= s.cost;
+  h.cdL = s.cd;
+
+  // direction: ưu tiên WASD; nếu đứng yên => lùi ngược facing
+  let ix=0, iy=0;
+  if (Input.keys["KeyW"]) iy -= 1;
+  if (Input.keys["KeyS"]) iy += 1;
+  if (Input.keys["KeyA"]) ix -= 1;
+  if (Input.keys["KeyD"]) ix += 1;
+
+  let [dx,dy] = U.norm(ix,iy);
+  if (dx===0 && dy===0){ dx=-h.facingX; dy=-h.facingY; }
+
+  const endX = h.x + dx*s.dist;
+  const endY = h.y + dy*s.dist;
+
+  h._dash = { t:0, dur:s.time, sx:h.x, sy:h.y, ex:endX, ey:endY };
+  h.invulnUntil = now + s.iframes;
+
+  pushMsg("L: Roll!", 0.8);
+  Audio.play("dash");
+  spawnTrail(h.x,h.y,dx,dy,0);
+}
+function castPlayerSkillU(h, now){
+  const s = TUNING.skill.mark;
+  if (h.cdU>0 || h.mana<s.cost || !canAct(h,now)) { Audio.play("deny"); return; }
+  h.mana -= s.cost;
+  h.cdU = s.cd;
+
+  const [nx,ny] = U.norm(h.facingX,h.facingY);
+  spawnProjectile({
+    team: h.team,
+    x: h.x + nx*(h.r+12),
+    y: h.y + ny*(h.r+12),
+    vx: nx*s.projSpeed,
+    vy: ny*s.projSpeed,
+    r: 10,
+    dmg: s.dmg,
+    maxDist: s.projRange,
+    kind: "MARK_DAGGER",
+    pierce: 1,
+    sourceId: h.id,
+    sourceType: "HERO",
+    flags: { mark:true }
+  });
+
+  pushMsg("U: Marking Dagger!", 1.0);
+  Audio.play("skill");
+  spawnMuzzle(h.x + nx*(h.r+10), h.y + ny*(h.r+10), 0, true);
+}
+function castPlayerSkillI(h, now){
+  const s = TUNING.skill.ult;
+  if (h.cdI>0 || h.mana<s.cost || h.hp<=0) { Audio.play("deny"); return; }
+  if (now < h.channelUntil) { Audio.play("deny"); return; }
+
+  h.mana -= s.cost;
+  h.cdI = s.cd;
+
+  h.channelUntil = now + s.channel;
+  h.ultFiringUntil = h.channelUntil + s.dur;
+  h.ultShotsLeft = s.shots;
+  h._ultNextAt = 0;
+
+  pushMsg("I: Golden Barrage!", 1.4);
+  Audio.play("ult");
+}
+
+function fireGoldenBarrageShot(h){
+  const s = TUNING.skill.ult;
+  const [nx,ny] = U.norm(h.facingX,h.facingY);
+  const px = -ny, py = nx;
+  const off = U.rand(-s.width*0.5, s.width*0.5);
+
+  const sx = h.x + nx*(h.r+14) + px*off;
+  const sy = h.y + ny*(h.r+14) + py*off;
+
+  spawnProjectile({
+    team: h.team,
+    x: sx, y: sy,
+    vx: nx*h.projSpeed*1.08,
+    vy: ny*h.projSpeed*1.08,
+    r: 6,
+    dmg: s.dmg,
+    maxDist: s.len,
+    kind: "GOLDEN_DART",
+    pierce: s.pierceMinions,
+    sourceId: h.id,
+    sourceType: "HERO",
+    flags: { fromPlayer:true, ult:true, pierceMinions:true }
+  });
+  Audio.play("shoot");
+  spawnMuzzle(sx,sy,0,false,true);
+}
+
+function applyDash(h, dt){
+  if (!h._dash) return;
+  h._dash.t += dt;
+  const t = U.clamp(h._dash.t / h._dash.dur, 0, 1);
+  h.x = U.lerp(h._dash.sx, h._dash.ex, easeOutCubic(t));
+  h.y = U.lerp(h._dash.sy, h._dash.ey, easeOutCubic(t));
+  if (t >= 1) h._dash = null;
+}
+
+/* =========================================================
+   // AI
+   ========================================================= */
+function diffParams(){
+  if (CONFIG.difficulty==="Easy")   return { thinkHz:4,  dodge:0.10, allInHp:0.28, retreatHp:0.30, towerFear:0.95, pokeAggro:0.45 };
+  if (CONFIG.difficulty==="Hard")   return { thinkHz:10, dodge:0.45, allInHp:0.42, retreatHp:0.38, towerFear:0.55, pokeAggro:0.72 };
+  return { thinkHz:7, dodge:0.25, allInHp:0.35, retreatHp:0.34, towerFear:0.75, pokeAggro:0.58 };
+}
+
+function makeAIController(hero, lane, fixedLane){
+  return {
+    state: "LANE_FARM",
+    lane: lane || "MID",
+    fixedLane: !!fixedLane,
+    lastThinkAt: 0,
+    desiredX: hero.x,
+    desiredY: hero.y
+  };
+}
+
+function pickEnemyHero(self){
+  let best=null, bestD2=1e18;
+  for (const h of GAME.heroes){
+    if (!h.alive || h.team===self.team) continue;
+    if (h.hidden && !isRevealedTo(self, h)) continue;
+    const d2 = U.dist2(self.x,self.y,h.x,h.y);
+    if (d2 < bestD2){ bestD2=d2; best=h; }
+  }
+  return best;
+}
+
+function countFriendlyMinionsNear(h, radius){
+  const r2 = radius*radius;
+  let n=0;
+  for (const m of GAME.minions){
+    if (!m.alive || m.team!==h.team) continue;
+    if (U.dist2(h.x,h.y,m.x,m.y) <= r2) n++;
+  }
+  return n;
+}
+
+function isEnemyWaveDeep(team, laneName){
+  if (team===1){
+    // enemy team0 deep near right
+    for (const m of GAME.minions){
+      if (!m.alive || m.team!==0 || m.lane!==laneName) continue;
+      if (m.x > World.W*0.62) return true;
+    }
+  }else{
+    // enemy team1 deep near left
+    for (const m of GAME.minions){
+      if (!m.alive || m.team!==1 || m.lane!==laneName) continue;
+      if (m.x < World.W*0.38) return true;
+    }
+  }
+  return false;
+}
+
+function findFriendlyFrontMinion(team, laneName){
+  let best=null;
+  for (const m of GAME.minions){
+    if (!m.alive || m.team!==team || m.lane!==laneName) continue;
+    if (!best) best=m;
+    else{
+      if (team===0){ if (m.x > best.x) best=m; }
+      else { if (m.x < best.x) best=m; }
+    }
+  }
+  return best;
+}
+
+function findLastHitTarget(aiHero, laneName){
+  const range2 = aiHero.atkRange*aiHero.atkRange;
+  let best=null, bestHP=1e9;
+  for (const m of GAME.minions){
+    if (!m.alive || m.team===aiHero.team || m.lane!==laneName) continue;
+    if (U.dist2(aiHero.x,aiHero.y,m.x,m.y) > range2) continue;
+    const est = aiHero.atkDmg;
+    if (m.hp <= est*1.15 && m.hp < bestHP){
+      best=m; bestHP=m.hp;
+    }
+  }
+  return best;
+}
+
+function nearestFriendlyTowerPos(team, laneName, x,y){
+  let best=null, bestD2=1e18;
+  for (const t of GAME.towers){
+    if (!t.alive || t.team!==team || t.lane!==laneName) continue;
+    const d2 = U.dist2(x,y,t.x,t.y);
+    if (d2 < bestD2){ bestD2=d2; best=t; }
+  }
+  return best;
+}
+
+function isNearEnemyTower(h, enemyTeam, range){
+  const r2 = range*range;
+  for (const t of GAME.towers){
+    if (!t.alive || t.team!==enemyTeam) continue;
+    if (U.dist2(h.x,h.y,t.x,t.y) < r2) return true;
+  }
+  return false;
+}
+
+function retreatPoint(h){
+  const ln = h.ai?.lane || h.lane || "MID";
+  const tw = nearestFriendlyTowerPos(h.team, ln, h.x, h.y);
+  if (tw) return [tw.x + (h.team===1? -120: 120), tw.y];
+  const core = GAME.cores.find(c => c.alive && c.team===h.team);
+  return core ? [core.x + (h.team===1? -120: 120), core.y] : [h.x,h.y];
+}
+
+function tryAISlowShot(h, now, target){
+  const s = TUNING.aiSkill.slowShot;
+  if (h.cdK>0 || h.mana<s.cost) return;
+  if (!target || !target.alive) return;
+  const dist = U.len(target.x-h.x, target.y-h.y);
+  if (dist > s.projRange*0.95) return;
+
+  const [fx,fy] = U.norm(target.x-h.x, target.y-h.y);
+  h.facingX=fx; h.facingY=fy;
+
+  h.mana -= s.cost;
+  h.cdK = s.cd;
+
+  spawnProjectile({
+    team: h.team,
+    x: h.x + fx*(h.r+12),
+    y: h.y + fy*(h.r+12),
+    vx: fx*s.projSpeed,
+    vy: fy*s.projSpeed,
+    r: 9,
+    dmg: s.dmg,
+    maxDist: s.projRange,
+    kind: "AI_SLOWSHOT",
+    pierce: 1,
+    sourceId: h.id,
+    sourceType: "HERO",
+    flags: { slow:true, slowDur:s.slowDur, slowPct:s.slowPct }
+  });
+
+  Audio.play("skill_soft");
+  spawnMuzzle(h.x + fx*(h.r+10), h.y + fy*(h.r+10), 1, true);
+}
+
+function tryAIDashBack(h, now, target){
+  const s = TUNING.aiSkill.dashBack;
+  if (h.cdL>0 || h.mana<s.cost) return;
+  if (!target || !target.alive) return;
+
+  const [fx,fy] = U.norm(target.x-h.x, target.y-h.y);
+  if (fx||fy){ h.facingX=fx; h.facingY=fy; }
+
+  const dx = -h.facingX, dy = -h.facingY;
+  h.mana -= s.cost;
+  h.cdL = s.cd;
+
+  const endX = h.x + dx*s.dist;
+  const endY = h.y + dy*s.dist;
+  h._dash = { t:0, dur:s.time, sx:h.x, sy:h.y, ex:endX, ey:endY };
+
+  Audio.play("dash_soft");
+  spawnTrail(h.x,h.y,dx,dy,h.team);
+}
+
+function tryAITrap(h, now, target){
+  const s = TUNING.aiSkill.trap;
+  if (h.cdU>0 || h.mana<s.cost) return;
+  if (!target || !target.alive) return;
+  const dist = U.len(target.x-h.x, target.y-h.y);
+  if (dist > 420) return;
+
+  const [fx,fy] = U.norm(target.x-h.x, target.y-h.y);
+  const tx = h.x + fx*120;
+  const ty = h.y + fy*120;
+
+  h.mana -= s.cost;
+  h.cdU = s.cd;
+
+  GAME.traps.push({
+    id: allocId(),
+    type: "TRAP",
+    team: h.team,
+    x: tx, y: ty,
+    r: s.r,
+    armedAt: now + s.arm,
+    expiresAt: now + s.dur,
+    dmg: s.dmg,
+    rootDur: s.rootDur,
+    triggered: false
+  });
+
+  Audio.play("trap");
+}
+
+function tryAIUlt(h, now, target){
+  const s = TUNING.aiSkill.ult;
+  if (h.cdI>0 || h.mana<s.cost) return;
+  if (!target || !target.alive) return;
+
+  const dist = U.len(target.x-h.x, target.y-h.y);
+  if (dist > 760) return;
+
+  const rooted = now < target.rootUntil;
+  const slowed = now < target.slowUntil;
+  const chance = rooted ? 0.9 : slowed ? 0.65 : 0.25;
+  if (Math.random() > chance) return;
+
+  const [fx,fy] = U.norm(target.x-h.x, target.y-h.y);
+  h.facingX=fx; h.facingY=fy;
+
+  h.mana -= s.cost;
+  h.cdI = s.cd;
+  h.channelUntil = now + s.channel;
+  h._aiUlt = { fireAt: h.channelUntil, fired:false };
+
+  Audio.play("ult_soft");
+}
+
+function updateAIUltFire(h, now){
+  const s = TUNING.aiSkill.ult;
+  if (!h._aiUlt) return;
+  if (!h._aiUlt.fired && now >= h._aiUlt.fireAt){
+    h._aiUlt.fired = true;
+
+    const [nx,ny] = U.norm(h.facingX,h.facingY);
+    spawnProjectile({
+      team: h.team,
+      x: h.x + nx*(h.r+14),
+      y: h.y + ny*(h.r+14),
+      vx: nx*s.speed,
+      vy: ny*s.speed,
+      r: 10,
+      dmg: s.dmg,
+      maxDist: s.len,
+      kind: "ICE_PIERCE",
+      pierce: s.pierce,
+      sourceId: h.id,
+      sourceType: "HERO",
+      flags: { pierce:true }
+    });
+
+    Audio.play("boom_soft");
+    spawnPulse(h.x + nx*18, h.y + ny*18, 42, h.team);
+  }
+  if (h._aiUlt.fired && now > h._aiUlt.fireAt + 0.35){
+    h._aiUlt = null;
+  }
+}
+
+function updateAI(h, dt, now){
+  applyDash(h, dt);
+
+  const ai = h.ai;
+  const dp = diffParams();
+  const thinkInterval = 1 / dp.thinkHz;
+
+  // maintain fixed lane
+  const laneName = (ai && ai.lane) ? ai.lane : (h.lane || "MID");
+
+  // target enemy hero (closest)
+  const target = pickEnemyHero(h);
+  const hpPct = h.hp / h.hpMax;
+  const targetHpPct = (target && target.alive) ? (target.hp / target.hpMax) : 1;
+  const dToTarget = (target && target.alive) ? U.len(target.x-h.x, target.y-h.y) : 9999;
+
+  // think gate
+  if (ai && (now - ai.lastThinkAt) < thinkInterval){
+    const [mx,my] = U.norm(ai.desiredX - h.x, ai.desiredY - h.y);
+    h.moveX=mx; h.moveY=my;
+    if (mx||my){ h.facingX=mx; h.facingY=my; }
+    if (h.fireHeld && canAct(h, now) && h.atkCd<=0 && !h.windupQueued) queueWindup(h,"BASIC");
+    return;
+  }
+  if (ai) ai.lastThinkAt = now;
+
+  const enemyTeam = 1 - h.team;
+  const nearEnemyTower = isNearEnemyTower(h, enemyTeam, 620);
+  const noFriendlyMinions = (countFriendlyMinionsNear(h, 380) === 0);
+
+  // state transitions
+  if (hpPct < dp.retreatHp || (nearEnemyTower && noFriendlyMinions)){
+    ai.state = "RETREAT";
+  }else if (target && dToTarget < 240){
+    ai.state = "KITE";
+  }else if (target && targetHpPct < dp.allInHp && !nearEnemyTower){
+    ai.state = "ALL_IN";
+  }else{
+    ai.state = "LANE_FARM";
+    if (target && dToTarget < 520 && Math.random() < dp.pokeAggro) ai.state = "POKE";
+  }
+
+  // act
+  if (ai.state === "RETREAT"){
+    const [rx,ry] = retreatPoint(h);
+    ai.desiredX=rx; ai.desiredY=ry;
+    h.fireHeld=false;
+
+    if (target && dToTarget < 360){
+      tryAIDashBack(h, now, target);
+      tryAITrap(h, now, target);
+    }
+  }
+  else if (ai.state === "KITE"){
+    if (target){
+      const [ax,ay] = U.norm(h.x - target.x, h.y - target.y);
+      ai.desiredX = h.x + ax*260;
+      ai.desiredY = h.y + ay*260;
+
+      const [fx,fy] = U.norm(target.x-h.x, target.y-h.y);
+      if (fx||fy){ h.facingX=fx; h.facingY=fy; }
+
+      tryAISlowShot(h, now, target);
+      h.fireHeld=true;
+    }else{
+      ai.state="LANE_FARM";
+      h.fireHeld=false;
+    }
+  }
+  else if (ai.state === "POKE"){
+    if (target){
+      const desiredDist = 420;
+      const dist = dToTarget;
+      const [toX,toY] = U.norm(target.x-h.x, target.y-h.y);
+      const dir = (dist > desiredDist) ? 1 : -1;
+
+      ai.desiredX = h.x + toX*dir*160;
+      ai.desiredY = h.y + toY*dir*160;
+
+      if (toX||toY){ h.facingX=toX; h.facingY=toY; }
+      tryAISlowShot(h, now, target);
+
+      if (Math.random() < dp.dodge){
+        const sx = -toY, sy = toX;
+        ai.desiredX += sx*U.rand(-120,120);
+        ai.desiredY += sy*U.rand(-120,120);
+      }
+      h.fireHeld=true;
+    }else{
+      ai.state="LANE_FARM";
+      h.fireHeld=false;
+    }
+  }
+  else if (ai.state === "ALL_IN"){
+    if (target){
+      const [toX,toY] = U.norm(target.x-h.x, target.y-h.y);
+      ai.desiredX = h.x + toX*220;
+      ai.desiredY = h.y + toY*220;
+      if (toX||toY){ h.facingX=toX; h.facingY=toY; }
+
+      tryAISlowShot(h, now, target);
+      tryAIUlt(h, now, target);
+      h.fireHeld=true;
+    }else{
+      ai.state="LANE_FARM";
+      h.fireHeld=false;
+    }
+  }
+  else { // LANE_FARM
+    h.fireHeld=false;
+    const lane = getLaneByName(laneName);
+
+    const anchor = findFriendlyFrontMinion(h.team, lane.name);
+    if (anchor){
+      const [fx,fy] = U.norm(anchor.x-h.x, anchor.y-h.y);
+      ai.desiredX = anchor.x - fx*140;
+      ai.desiredY = anchor.y - fy*140;
+
+      const lh = findLastHitTarget(h, lane.name);
+      if (lh){
+        const [tx,ty] = U.norm(lh.x-h.x, lh.y-h.y);
+        if (tx||ty){ h.facingX=tx; h.facingY=ty; }
+        h.fireHeld=true;
+      }
+
+      // if enemy hero shows up in lane, sometimes poke
+      if (target && dToTarget < 520 && Math.random() < dp.pokeAggro*0.5){
+        const [px,py] = U.norm(target.x-h.x, target.y-h.y);
+        if (px||py){ h.facingX=px; h.facingY=py; }
+        tryAISlowShot(h, now, target);
+        h.fireHeld=true;
+      }
+    }else{
+      const wps = laneWaypointsForTeam(lane, h.team);
+      const midWp = wps[Math.floor(wps.length*0.55)];
+      ai.desiredX = midWp.x;
+      ai.desiredY = midWp.y;
+    }
+
+    // defend if wave deep
+    if (isEnemyWaveDeep(h.team, lane.name)){
+      const def = nearestFriendlyTowerPos(h.team, lane.name, h.x, h.y);
+      if (def){
+        ai.desiredX = def.x + (h.team===1? -90: 90);
+        ai.desiredY = def.y + U.rand(-60,60);
+      }
+    }
+  }
+
+  ai.desiredX = U.clamp(ai.desiredX, 20, World.W-20);
+  ai.desiredY = U.clamp(ai.desiredY, 20, World.H-20);
+
+  const [mx,my] = U.norm(ai.desiredX - h.x, ai.desiredY - h.y);
+  h.moveX=mx; h.moveY=my;
+
+  // face move if not currently facing target
+  if ((mx||my) && (!h.fireHeld || !target)){
+    h.facingX = mx; h.facingY = my;
+  }
+
+  // basic fire
+  if (h.fireHeld && canAct(h,now) && h.atkCd<=0 && !h.windupQueued){
+    queueWindup(h,"BASIC");
+  }
+}
+
+/* =========================================================
+   // Towers / Cores
+   ========================================================= */
+function getEntityById(id){
+  if (!id) return null;
+  for (const h of GAME.heroes) if (h.id===id) return h;
+  for (const m of GAME.minions) if (m.id===id) return m;
+  for (const t of GAME.towers) if (t.id===id) return t;
+  for (const c of GAME.cores) if (c.id===id) return c;
+  return null;
+}
+
+function selectTowerTarget(tw){
+  const range2 = tw.range*tw.range;
+  const now = U.now();
+
+  // forced target if valid
+  if (tw.forcedTargetId){
+    const ft = getEntityById(tw.forcedTargetId);
+    if (ft && ft.alive && ft.team !== tw.team){
+      const d2 = U.dist2(tw.x,tw.y,ft.x,ft.y);
+      if (d2 <= range2 && (!ft.hidden || isRevealedTo(tw, ft))) return ft;
+    }
+  }
+  if (tw.forcedUntil < now) tw.forcedTargetId=0;
+
+  // prefer minions
+  let best=null, bestD2=1e18;
+  for (const m of GAME.minions){
+    if (!m.alive || m.team===tw.team) continue;
+    const d2 = U.dist2(tw.x,tw.y,m.x,m.y);
+    if (d2<=range2 && d2<bestD2){ best=m; bestD2=d2; }
+  }
+  if (best) return best;
+
+  // then heroes
+  for (const h of GAME.heroes){
+    if (!h.alive || h.team===tw.team) continue;
+    if (h.hidden && !isRevealedTo(tw,h)) continue;
+    const d2 = U.dist2(tw.x,tw.y,h.x,h.y);
+    if (d2<=range2 && d2<bestD2){ best=h; bestD2=d2; }
+  }
+  if (best) return best;
+
+  // then core
+  for (const c of GAME.cores){
+    if (!c.alive || c.team===tw.team) continue;
+    const d2 = U.dist2(tw.x,tw.y,c.x,c.y);
+    if (d2<=range2 && d2<bestD2){ best=c; bestD2=d2; }
+  }
+  return best;
+}
+
+function selectCoreTarget(c){
+  const range2 = c.range*c.range;
+  let best=null, bestD2=1e18;
+  for (const m of GAME.minions){
+    if (!m.alive || m.team===c.team) continue;
+    const d2 = U.dist2(c.x,c.y,m.x,m.y);
+    if (d2<=range2 && d2<bestD2){ best=m; bestD2=d2; }
+  }
+  for (const h of GAME.heroes){
+    if (!h.alive || h.team===c.team) continue;
+    if (h.hidden && !isRevealedTo(c,h)) continue;
+    const d2 = U.dist2(c.x,c.y,h.x,h.y);
+    if (d2<=range2 && d2<bestD2){ best=h; bestD2=d2; }
+  }
+  return best;
+}
+
+function updateTowers(dt){
+  const now = U.now();
+
+  for (const tw of GAME.towers){
+    if (!tw.alive) continue;
+    if (tw.hp <= 0){
+      tw.alive=false;
+      pushMsg(`Tower Destroyed (${tw.lane})`, 2.0);
+      Audio.play("explode");
+      spawnExplosion(tw.x,tw.y,40,tw.team);
+      grantXpForTower(tw);
+      continue;
+    }
+    tw.atkCd = Math.max(0, tw.atkCd - dt);
+    if (tw.atkCd <= 0){
+      const target = selectTowerTarget(tw);
+      if (target){
+        tw.atkCd = 1 / tw.atkSpeed;
+        const [nx,ny] = U.norm(target.x-tw.x, target.y-tw.y);
+        spawnProjectile({
+          team: tw.team,
+          x: tw.x + nx*(tw.r+8),
+          y: tw.y + ny*(tw.r+8),
+          vx: nx*TUNING.tower.projSpeed,
+          vy: ny*TUNING.tower.projSpeed,
+          r: 7,
+          dmg: tw.dmg,
+          maxDist: TUNING.tower.projRange,
+          kind: "TOWER_SHOT",
+          pierce: 1,
+          sourceId: tw.id,
+          sourceType: "TOWER"
+        });
+        Audio.play("tower");
+      }
+    }
+  }
+
+  for (const c of GAME.cores){
+    if (!c.alive) continue;
+    if (c.hp <= 0){
+      c.alive=false;
+      onCoreDestroyed(c);
+      continue;
+    }
+    c.atkCd = Math.max(0, c.atkCd - dt);
+    if (c.atkCd <= 0){
+      const target = selectCoreTarget(c);
+      if (target){
+        c.atkCd = 1 / c.atkSpeed;
+        const [nx,ny] = U.norm(target.x-c.x, target.y-c.y);
+        spawnProjectile({
+          team: c.team,
+          x: c.x + nx*(c.r+10),
+          y: c.y + ny*(c.r+10),
+          vx: nx*TUNING.core.projSpeed,
+          vy: ny*TUNING.core.projSpeed,
+          r: 8,
+          dmg: c.dmg,
+          maxDist: TUNING.core.projRange,
+          kind: "CORE_SHOT",
+          pierce: 1,
+          sourceId: c.id,
+          sourceType: "CORE"
+        });
+        Audio.play("tower_soft");
+      }
+    }
+  }
+}
+
+/* =========================================================
+   // Combat
+   ========================================================= */
+function triggerTowerAggro(attacker, victim){
+  const now = U.now();
+  const r2 = TUNING.tower.range*TUNING.tower.range;
+
+  let best=null, bestD2=1e18;
+  for (const tw of GAME.towers){
+    if (!tw.alive || tw.team !== victim.team) continue;
+    const dv = U.dist2(tw.x,tw.y,victim.x,victim.y);
+    if (dv > r2) continue;
+    const da = U.dist2(tw.x,tw.y,attacker.x,attacker.y);
+    if (da > r2) continue;
+    if (dv < bestD2){ bestD2=dv; best=tw; }
+  }
+  if (best){
+    best.forcedTargetId = attacker.id;
+    best.forcedUntil = now + TUNING.tower.aggroSwapSeconds;
+    spawnPulse(best.x,best.y,40,best.team);
+  }
+}
+
+function dealDamage(attacker, victim, amount, dmgType, meta={}){
+  if (!victim || !victim.alive) return;
+  const now = U.now();
+
+  if (victim.type==="HERO" && now < victim.invulnUntil) return;
+
+  if (victim.type==="HERO" && now < victim.markedUntil && meta && meta.fromPlayerDart){
+    amount *= (1 + victim.markedAmp);
+  }
+  if (victim.type==="MINION" && meta && meta.fromPlayerDart && victim._markedByPlayerUntil && now < victim._markedByPlayerUntil){
+    amount *= 1.12;
+  }
+
+  victim.hp -= amount;
+  victim.lastDmgTakenAt = now;
+
+  if (attacker && attacker.type==="HERO"){
+    attacker.lastCombatAt = now;
+    attacker.hidden = false;
+  }
+  if (victim.type==="HERO"){
+    victim.lastCombatAt = now;
+    victim.hidden = false;
+  }
+
+  if (attacker && attacker.type==="HERO" && victim.type==="HERO" && attacker.team !== victim.team){
+    triggerTowerAggro(attacker, victim);
+  }
+
+  if (victim.type==="MINION"){
+    if (attacker && attacker.type==="HERO"){
+      victim.lastDamagedByHeroId = attacker.id;
+      victim.lastDamagedAt = now;
+    }
+  }
+
+  if (meta && meta.applySlow && victim.type==="HERO"){
+    victim.slowUntil = Math.max(victim.slowUntil, now + meta.slowDur);
+    victim.slowPct = Math.max(victim.slowPct, meta.slowPct);
+  }
+}
+
+function onUnitDeath(unit){
+  spawnExplosion(unit.x,unit.y,18,unit.team);
+  Audio.play("hit_soft");
+
+  if (unit.type==="MINION"){
+    const nearbyR2 = 600*600;
+    for (const h of GAME.heroes){
+      if (!h.alive) continue;
+      if (h.team === unit.team) continue;
+      if (U.dist2(h.x,h.y,unit.x,unit.y) <= nearbyR2){
+        h.xp += TUNING.level.xpMinionNearby;
+      }
+    }
+    const killer = getEntityById(unit.lastDamagedByHeroId);
+    if (killer && killer.type==="HERO" && killer.team !== unit.team){
+      killer.xp += TUNING.level.xpMinionLastHitBonus;
+      spawnText(unit.x, unit.y-18, "+XP", killer.team===0? "#ffd36d":"#9fe8ff");
+      Audio.play("xp");
+    }
+  }
+}
+
+function grantXpForTower(tw){
+  const enemyTeam = 1 - tw.team;
+  let best=null, bestD2=1e18;
+  for (const h of GAME.heroes){
+    if (!h.alive || h.team !== enemyTeam) continue;
+    const d2 = U.dist2(h.x,h.y,tw.x,tw.y);
+    if (d2 < bestD2){ bestD2=d2; best=h; }
+  }
+  if (best){
+    best.xp += TUNING.level.xpTower;
+    spawnText(tw.x, tw.y-24, "+Tower XP", best.team===0? "#ffd36d":"#9fe8ff");
+  }
+}
+
+function onCoreDestroyed(core){
+  spawnExplosion(core.x, core.y, 80, core.team);
+  Audio.play("boom");
+  GAME.winner = (core.team===0) ? "TEAM 1" : "TEAM 0";
+  GAME.state = "ENDED";
+  pushMsg(GAME.winner==="TEAM 0" ? "VICTORY!" : "DEFEAT!", 4.0);
+}
+
+/* =========================================================
+   // Projectiles (Pooling)
+   ========================================================= */
+function makeProjectilePool(n){
+  const arr = new Array(n);
+  for (let i=0;i<n;i++){
+    arr[i] = {
+      active:false,
+      id:0,
+      team:0,
+      x:0,y:0,vx:0,vy:0,
+      r:6,
+      dmg:10,
+      maxDist:400,
+      dist:0,
+      pierce:1,
+      kind:"GEN",
+      sourceId:0,
+      sourceType:"NONE",
+      flags:null,
+      _lastHitId:0
+    };
+  }
+  return arr;
+}
+
+function spawnProjectile(p){
+  const pool = GAME.projPool;
+  for (let i=0;i<pool.length;i++){
+    const pr = pool[i];
+    if (!pr.active){
+      pr.active=true;
+      pr.id=allocId();
+      pr.team=p.team;
+      pr.x=p.x; pr.y=p.y;
+      pr.vx=p.vx; pr.vy=p.vy;
+      pr.r=p.r ?? 6;
+      pr.dmg=p.dmg ?? 10;
+      pr.maxDist=p.maxDist ?? 500;
+      pr.dist=0;
+      pr.pierce=p.pierce ?? 1;
+      pr.kind=p.kind ?? "GEN";
+      pr.sourceId=p.sourceId ?? 0;
+      pr.sourceType=p.sourceType ?? "NONE";
+      pr.flags=p.flags ?? null;
+      pr._lastHitId=0;
+      return pr;
+    }
+  }
+  return null;
+}
+
+function updateProjectiles(dt){
+  const pool = GAME.projPool;
+  const now = U.now();
+
+  for (let i=0;i<pool.length;i++){
+    const p = pool[i];
+    if (!p.active) continue;
+
+    const dx=p.vx*dt, dy=p.vy*dt;
+    p.x += dx; p.y += dy;
+    p.dist += Math.hypot(dx,dy);
+
+    if (p.dist >= p.maxDist){
+      p.active=false;
+      continue;
+    }
+
+    const enemyTeam = 1 - p.team;
+
+    function onHit(v){
+      // Mark dagger
+      if (p.flags && p.flags.mark){
+        if (v.type==="HERO"){
+          v.markedUntil = Math.max(v.markedUntil, now + TUNING.skill.mark.markDur);
+          v.markedAmp = TUNING.skill.mark.amp;
+          v.slowUntil = Math.max(v.slowUntil, now + TUNING.skill.mark.slowDur);
+          v.slowPct = Math.max(v.slowPct, TUNING.skill.mark.slowPct);
+          spawnPulse(v.x,v.y,26,v.team);
+          spawnText(v.x, v.y-22, "MARKED", "#ffd36d");
+          Audio.play("mark");
+        }else if (v.type==="MINION"){
+          v._markedByPlayerUntil = now + 2.5;
+          spawnPulse(v.x,v.y,18,v.team);
+        }
+      }
+      // AI slow shot
+      if (p.flags && p.flags.slow && v.type==="HERO"){
+        v.slowUntil = Math.max(v.slowUntil, now + p.flags.slowDur);
+        v.slowPct = Math.max(v.slowPct, p.flags.slowPct);
+        spawnText(v.x, v.y-18, "SLOW", "#9fe8ff");
+        Audio.play("chill");
+      }
+    }
+
+    // heroes
+    for (const h of GAME.heroes){
+      if (!h.alive || h.team!==enemyTeam) continue;
+      if (h.hidden && !isRevealedTo(p, h) && p.kind!=="ICE_PIERCE") continue;
+      if (!U.circleHit(p.x,p.y,p.r, h.x,h.y,h.r)) continue;
+      if (p._lastHitId===h.id) continue;
+
+      const src = getEntityById(p.sourceId);
+      const fromPlayerDart = !!(p.flags && p.flags.fromPlayer);
+
+      dealDamage(src, h, p.dmg, "PHYS", { fromPlayerDart });
+      onHit(h);
+      spawnHitFx(h.x,h.y,p.team);
+
+      // passive for player only
+      if (src && src.type==="HERO" && src.kit==="PLAYER" && fromPlayerDart){
+        src.passiveHits++;
+        if (src.passiveHits >= TUNING.player.passiveN){
+          src.passiveReady = true;
+          spawnText(src.x, src.y-26, "PASSIVE READY", "#ffd36d");
+        }
+      }
+
+      p._lastHitId=h.id;
+
+      if (p.kind==="ICE_PIERCE"){
+        // pierce keep going
+      }else{
+        p.pierce -= 1;
+        if (p.pierce<=0) p.active=false;
+      }
+      break;
+    }
+    if (!p.active) continue;
+
+    // minions
+    for (const m of GAME.minions){
+      if (!m.alive || m.team!==enemyTeam) continue;
+      if (!U.circleHit(p.x,p.y,p.r, m.x,m.y,m.r)) continue;
+      if (p._lastHitId===m.id) continue;
+
+      const src = getEntityById(p.sourceId);
+      const fromPlayerDart = !!(p.flags && p.flags.fromPlayer);
+
+      dealDamage(src, m, p.dmg, "PHYS", { fromPlayerDart });
+      onHit(m);
+      spawnHitFx(m.x,m.y,p.team);
+
+      // passive for player only
+      if (src && src.type==="HERO" && src.kit==="PLAYER" && fromPlayerDart){
+        src.passiveHits++;
+        if (src.passiveHits >= TUNING.player.passiveN){
+          src.passiveReady = true;
+          spawnText(src.x, src.y-26, "PASSIVE READY", "#ffd36d");
+        }
+      }
+
+      p._lastHitId=m.id;
+
+      if (p.kind==="ICE_PIERCE"){
+        // keep going
+      }else if (p.flags && p.flags.pierceMinions){
+        p.pierce -= 1;
+        if (p.pierce<=0) p.active=false;
+      }else{
+        p.active=false;
+      }
+      break;
+    }
+    if (!p.active) continue;
+
+    // towers / cores
+    for (const tw of GAME.towers){
+      if (!tw.alive || tw.team!==enemyTeam) continue;
+      if (!U.circleHit(p.x,p.y,p.r, tw.x,tw.y,tw.r)) continue;
+      const src = getEntityById(p.sourceId);
+      dealDamage(src, tw, p.dmg, "PHYS", { fromPlayerDart: !!(p.flags && p.flags.fromPlayer) });
+      spawnSpark(p.x,p.y,p.team);
+      Audio.play("tick_soft");
+      p.active=false;
+      break;
+    }
+    if (!p.active) continue;
+
+    for (const c of GAME.cores){
+      if (!c.alive || c.team!==enemyTeam) continue;
+      if (!U.circleHit(p.x,p.y,p.r, c.x,c.y,c.r)) continue;
+      const src = getEntityById(p.sourceId);
+      dealDamage(src, c, p.dmg, "PHYS", { fromPlayerDart: !!(p.flags && p.flags.fromPlayer) });
+      spawnSpark(p.x,p.y,p.team);
+      Audio.play("tick_soft");
+      p.active=false;
+      break;
+    }
+
+    if (p.kind==="ICE_PIERCE") spawnIceTrail(p.x,p.y);
+  }
+}
+
+/* =========================================================
+   // Traps
+   ========================================================= */
+function updateTraps(dt){
+  const now = U.now();
+  for (let i=GAME.traps.length-1;i>=0;i--){
+    const tr = GAME.traps[i];
+    if (now > tr.expiresAt){
+      GAME.traps.splice(i,1);
+      continue;
+    }
+    if (tr.triggered) continue;
+    if (now < tr.armedAt) continue;
+
+    for (const h of GAME.heroes){
+      if (!h.alive || h.team===tr.team) continue;
+      if (U.circleHit(tr.x,tr.y,tr.r, h.x,h.y,h.r)){
+        tr.triggered=true;
+        dealDamage(tr, h, tr.dmg, "MAGIC", {trap:true});
+        h.rootUntil = Math.max(h.rootUntil, now + tr.rootDur);
+        spawnExplosion(tr.x,tr.y,26,tr.team);
+        Audio.play("trap_hit");
+        pushMsg("Rooted!", 0.8);
+        break;
+      }
+    }
+  }
+}
+
+/* =========================================================
+   // Particles (Pooling)
+   ========================================================= */
+function makeParticlePool(n){
+  const arr = new Array(n);
+  for (let i=0;i<n;i++){
+    arr[i] = { active:false, kind:"dot", x:0,y:0,vx:0,vy:0, life:0, max:1, a:1, size:2, color:"#fff" };
+  }
+  return arr;
+}
+function spawnParticle(kind,x,y,vx,vy,life,size,color){
+  const pool = GAME.partPool;
+  for (let i=0;i<pool.length;i++){
+    const p = pool[i];
+    if (!p.active){
+      p.active=true;
+      p.kind=kind; p.x=x; p.y=y; p.vx=vx; p.vy=vy;
+      p.life=life; p.max=life; p.size=size; p.color=color; p.a=1;
+      return p;
+    }
+  }
+  return null;
+}
+function updateParticles(dt){
+  const pool = GAME.partPool;
+  for (let i=0;i<pool.length;i++){
+    const p = pool[i];
+    if (!p.active) continue;
+    p.life -= dt;
+    if (p.life <= 0){ p.active=false; continue; }
+    p.x += p.vx*dt; p.y += p.vy*dt;
+    p.vx *= (1 - dt*1.6);
+    p.vy *= (1 - dt*1.6);
+    p.a = U.clamp(p.life/p.max,0,1);
+  }
+}
+function spawnExplosion(x,y,power,team){
+  const col = team===0 ? "#ffd36d" : "#9fe8ff";
+  for (let i=0;i<26;i++){
+    const a = U.rand(0,Math.PI*2);
+    const sp = U.rand(power*4, power*9);
+    spawnParticle("dot", x,y, Math.cos(a)*sp, Math.sin(a)*sp, U.rand(0.35,0.9), U.rand(2,5), col);
+  }
+  for (let i=0;i<16;i++){
+    const a = U.rand(0,Math.PI*2);
+    const sp = U.rand(power*2, power*6);
+    spawnParticle("smoke", x,y, Math.cos(a)*sp, Math.sin(a)*sp, U.rand(0.6,1.2), U.rand(6,12), "#0b0f14");
+  }
+}
+function spawnHitFx(x,y,team){
+  const col = team===0 ? "#ffd36d" : "#9fe8ff";
+  for (let i=0;i<6;i++){
+    const a = U.rand(0,Math.PI*2);
+    const sp = U.rand(140,260);
+    spawnParticle("dot", x,y, Math.cos(a)*sp, Math.sin(a)*sp, U.rand(0.12,0.28), U.rand(2,4), col);
+  }
+}
+function spawnSpark(x,y,team){
+  const col = team===0 ? "#ffe7a9" : "#c9f3ff";
+  for (let i=0;i<8;i++){
+    const a = U.rand(0,Math.PI*2);
+    const sp = U.rand(120,240);
+    spawnParticle("spark", x,y, Math.cos(a)*sp, Math.sin(a)*sp, U.rand(0.12,0.24), U.rand(1,3), col);
+  }
+}
+function spawnMuzzle(x,y,team,big=false,ult=false){
+  const col = team===0 ? "#ffd36d" : "#9fe8ff";
+  const n = big ? 10 : 6;
+  for (let i=0;i<n;i++){
+    const a = U.rand(0,Math.PI*2);
+    const sp = U.rand(90, big?260:180);
+    spawnParticle("dot", x,y, Math.cos(a)*sp, Math.sin(a)*sp, U.rand(0.10, big?0.26:0.18), U.rand(2, ult?5:4), col);
+  }
+}
+function spawnPulse(x,y,size,team){
+  const col = team===0 ? "#ffd36d" : "#9fe8ff";
+  spawnParticle("ring", x,y, 0,0, 0.35, size, col);
+}
+function spawnTrail(x,y,dx,dy,team){
+  const col = team===0 ? "#ffd36d" : "#9fe8ff";
+  for (let i=0;i<18;i++){
+    spawnParticle("dot", x - dx*i*8, y - dy*i*8, U.rand(-40,40), U.rand(-40,40), U.rand(0.2,0.45), U.rand(2,5), col);
+  }
+}
+function spawnIceTrail(x,y){
+  for (let i=0;i<3;i++){
+    spawnParticle("dot", x+U.rand(-4,4), y+U.rand(-4,4), U.rand(-40,40), U.rand(-40,40), U.rand(0.18,0.28), U.rand(2,4), "#9fe8ff");
+  }
+}
+
+/* =========================================================
+   // UI helpers
+   ========================================================= */
+function pushMsg(text, dur=1.5){
+  GAME.msgQueue.push({ text, t: dur, max: dur });
+}
+const FloatingText = [];
+function spawnText(x,y,text,color="#fff"){
+  FloatingText.push({ x,y,text,color, t:1.1, max:1.1, vy:-26 });
+}
+function updateFloatingText(dt){
+  for (let i=FloatingText.length-1;i>=0;i--){
+    const ft = FloatingText[i];
+    ft.t -= dt;
+    ft.y += ft.vy*dt;
+    if (ft.t<=0) FloatingText.splice(i,1);
+  }
+}
+
+/* =========================================================
+   // Brush stealth (optional)
+   ========================================================= */
+function inBrush(x,y){
+  for (const b of World.brush){
+    if (x>=b.x && x<=b.x+b.w && y>=b.y && y<=b.y+b.h) return true;
+  }
+  return false;
+}
+function updateBrushStealth(h, now){
+  const inside = inBrush(h.x,h.y);
+  if (inside){
+    if (!h.brushEnterAt) h.brushEnterAt = now;
+    if ((now - h.brushEnterAt) > 0.6 && (now - h.lastCombatAt) > 0.6){
+      h.hidden = true;
+    }
+  }else{
+    h.brushEnterAt = 0;
+    h.hidden = false;
+  }
+}
+function isRevealedTo(observer, target){
+  const d2 = U.dist2(observer.x,observer.y, target.x,target.y);
+  return d2 <= (230*230);
+}
+
+/* =========================================================
+   // Leveling
+   ========================================================= */
+function tryLevelUp(h){
+  while (h.xp >= h.xpToNext){
+    h.xp -= h.xpToNext;
+    h.level++;
+    h.xpToNext = Math.floor(h.xpToNext * 1.18 + 28);
+
+    h.hpMax += TUNING.level.hpPerLevel;
+    h.manaMax += TUNING.level.manaPerLevel;
+    h.atkDmg += TUNING.level.dmgPerLevel;
+    h.hp = Math.min(h.hp + 35, h.hpMax);
+    h.mana = Math.min(h.mana + 18, h.manaMax);
+
+    spawnText(h.x, h.y-34, `LEVEL UP! (${h.level})`, "#cfe8d3");
+    Audio.play("xp");
+  }
+}
+
+/* =========================================================
+   // Heroes update
+   ========================================================= */
+function updatePlayerInput(h, dt, now){
+  let ix=0, iy=0;
+  if (Input.keys["KeyW"]) iy -= 1;
+  if (Input.keys["KeyS"]) iy += 1;
+  if (Input.keys["KeyA"]) ix -= 1;
+  if (Input.keys["KeyD"]) ix += 1;
+
+  // Mobile joystick overrides keyboard movement when active.
+  if (isTouchDevice() && (Input.touch.moveX!==0 || Input.touch.moveY!==0)){
+    ix=Input.touch.moveX;
+    iy=Input.touch.moveY;
+  }
+
+  const [nx,ny] = U.norm(ix,iy);
+  h.moveX=nx; h.moveY=ny;
+
+  if (Math.abs(ix)+Math.abs(iy) > 0){
+    h.facingX=nx; h.facingY=ny;
+  }
+
+  if (consumeJust("Escape")){
+    if (GAME.state==="PLAYING") GAME.state="PAUSED";
+  }
+
+  if (consumeJust("Space")){
+    GAME.camFollow = !GAME.camFollow;
+    pushMsg(GAME.camFollow ? "Camera: Follow" : "Camera: Free", 1.2);
+  }
+
+  if (consumeJust("KeyK")) castPlayerSkillK(h, now);
+  if (consumeJust("KeyL")) castPlayerSkillL(h, now);
+  if (consumeJust("KeyU")) castPlayerSkillU(h, now);
+  if (consumeJust("KeyI")) castPlayerSkillI(h, now);
+
+  const holdingJ = !!Input.keys["KeyJ"] || Input.touch.attack;
+  if (CONFIG.playerAutoFireHoldJ){
+    h.fireHeld = holdingJ;
+  }else{
+    if (consumeJust("KeyJ")) { h.fireHeld=true; h._singleShot=true; }
+    if (h._singleShot && h.fireHeld && h.atkCd <= 0){ h.fireHeld=false; h._singleShot=false; }
+  }
+
+  if (h.fireHeld && canAct(h,now) && h.atkCd<=0 && !h.windupQueued){
+    queueWindup(h,"BASIC");
+  }
+
+  // free camera arrows
+  if (!GAME.camFollow){
+    let cx=0, cy=0;
+    if (Input.keys["ArrowUp"]) cy -= 1;
+    if (Input.keys["ArrowDown"]) cy += 1;
+    if (Input.keys["ArrowLeft"]) cx -= 1;
+    if (Input.keys["ArrowRight"]) cx += 1;
+    const [cnx,cny] = U.norm(cx,cy);
+    if (cnx||cny){
+      GAME.camX += cnx*520*dt;
+      GAME.camY += cny*520*dt;
+      const halfW=W*0.5, halfH=H*0.5;
+      GAME.camX = U.clamp(GAME.camX, halfW, World.W-halfW);
+      GAME.camY = U.clamp(GAME.camY, halfH, World.H-halfH);
+    }
+  }
+}
+
+function updateHeroes(dt){
+  const now = U.now();
+  for (const h of GAME.heroes){
+    // respawn
+    if (!h.alive){
+      if (now >= h.deadUntil) respawnHero(h);
+      continue;
+    }
+
+    if (h.hp <= 0){
+      killHero(h);
+      continue;
+    }
+
+    // passive xp
+    h.xp += TUNING.level.xpPerSecond * dt;
+    tryLevelUp(h);
+
+    const slowed = now < h.slowUntil;
+    const rooted = now < h.rootUntil;
+
+    h.cdK = Math.max(0, h.cdK - dt);
+    h.cdL = Math.max(0, h.cdL - dt);
+    h.cdU = Math.max(0, h.cdU - dt);
+    h.cdI = Math.max(0, h.cdI - dt);
+    h.atkCd = Math.max(0, h.atkCd - dt);
+
+    updateBrushStealth(h, now);
+
+    if (h.isPlayer){
+      updatePlayerInput(h, dt, now);
+    }else{
+      updateAIUltFire(h, now);
+      updateAI(h, dt, now);
+    }
+
+    // channel locks movement
+    if (now < h.channelUntil){
+      h.moveX=0; h.moveY=0;
+    }
+
+    // move (no obstacles)
+    if (!rooted && now >= h.channelUntil){
+      const spd = h.move * (slowed ? (1 - h.slowPct) : 1);
+      h.x += h.moveX * spd * dt;
+      h.y += h.moveY * spd * dt;
+    }
+
+    // dash update
+    applyDash(h, dt);
+
+    // clamp
+    h.x = U.clamp(h.x, 10, World.W-10);
+    h.y = U.clamp(h.y, 10, World.H-10);
+
+    // windup fire
+    if (h.windupQueued){
+      h.windupT -= dt;
+      if (h.windupT <= 0){
+        h.windupQueued=false;
+        if (h.queuedType==="BASIC") doBasicAttack(h, now);
+      }
+    }
+
+    // player ultimate firing
+    if (h.kit==="PLAYER" && h.ultShotsLeft>0 && now < h.ultFiringUntil){
+      const s = TUNING.skill.ult;
+      const interval = s.dur / s.shots;
+      if (!h._ultNextAt) h._ultNextAt = now;
+      while (h.ultShotsLeft>0 && now >= h._ultNextAt){
+        h._ultNextAt += interval;
+        fireGoldenBarrageShot(h);
+        h.ultShotsLeft--;
+      }
+    }else if (h.kit==="PLAYER" && now >= h.ultFiringUntil){
+      h.ultShotsLeft=0;
+      h._ultNextAt=0;
+    }
+  }
+}
+
+/* =========================================================
+   // Match reset
+   ========================================================= */
+function resetMatch(){
+  GAME.t=0;
+  GAME.matchLeft = CONFIG.matchSeconds;
+  GAME.winner=null;
+  GAME.msgQueue.length=0;
+
+  GAME.minions.length=0;
+  GAME.towers.length=0;
+  GAME.cores.length=0;
+  GAME.traps.length=0;
+
+  GAME.kills.team0=0;
+  GAME.kills.team1=0;
+
+  GAME.nextId=1;
+
+  GAME.projPool = makeProjectilePool(TUNING.pools.projectiles);
+  GAME.partPool = makeParticlePool(TUNING.pools.particles);
+
+  buildWorld();
+  spawnHeroes();
+
+  GAME.nextWaveAt = 2.0;
+  GAME.camFollow = true;
+  GAME.camX = GAME.heroes[0].x;
+  GAME.camY = GAME.heroes[0].y;
+}
+
+/* =========================================================
+   // Audio (WebAudio)
+   ========================================================= */
+const Audio = {
+  ctx:null, master:null, inited:false,
+  ensure(){
+    if (this.inited) return;
+    try{
+      const AC = window.AudioContext || window.webkitAudioContext;
+      this.ctx = new AC();
+      this.master = this.ctx.createGain();
+      this.master.gain.value = U.clamp(CONFIG.soundVolume,0,1);
+      this.master.connect(this.ctx.destination);
+      this.inited=true;
+    }catch(e){ this.inited=false; }
+  },
+  beep(freq,dur,type="sine",vol=0.08){
+    if (!this.inited) return;
+    const t0=this.ctx.currentTime;
+    const o=this.ctx.createOscillator();
+    const g=this.ctx.createGain();
+    o.type=type;
+    o.frequency.setValueAtTime(freq,t0);
+    g.gain.setValueAtTime(0.0001,t0);
+    g.gain.exponentialRampToValueAtTime(vol,t0+0.01);
+    g.gain.exponentialRampToValueAtTime(0.0001,t0+dur);
+    o.connect(g); g.connect(this.master);
+    o.start(t0); o.stop(t0+dur+0.02);
+  },
+  noise(dur,vol=0.08){
+    if (!this.inited) return;
+    const t0=this.ctx.currentTime;
+    const sr=this.ctx.sampleRate;
+    const len=Math.floor(sr*dur);
+    const buf=this.ctx.createBuffer(1,len,sr);
+    const data=buf.getChannelData(0);
+    for (let i=0;i<len;i++) data[i]=(Math.random()*2-1)*(1-i/len);
+    const src=this.ctx.createBufferSource();
+    const g=this.ctx.createGain();
+    g.gain.value=vol;
+    src.buffer=buf;
+    src.connect(g); g.connect(this.master);
+    src.start(t0); src.stop(t0+dur);
+  },
+  play(name){
+    if (!this.inited) return;
+    switch(name){
+      case "shoot":        this.beep(760,0.06,"square",0.05); break;
+      case "shoot_soft":   this.beep(540,0.06,"triangle",0.045); break;
+      case "hit":          this.beep(220,0.05,"sawtooth",0.04); break;
+      case "hit_soft":     this.beep(180,0.05,"triangle",0.03); break;
+      case "skill":        this.beep(420,0.09,"square",0.06); this.beep(820,0.06,"sine",0.03); break;
+      case "skill_soft":   this.beep(360,0.08,"triangle",0.05); break;
+      case "buff":         this.beep(520,0.10,"sine",0.05); this.beep(780,0.08,"sine",0.04); break;
+      case "dash":         this.beep(900,0.06,"sine",0.06); break;
+      case "dash_soft":    this.beep(760,0.06,"sine",0.05); break;
+      case "tower":        this.beep(140,0.08,"square",0.06); break;
+      case "tower_soft":   this.beep(160,0.08,"triangle",0.05); break;
+      case "explode":      this.noise(0.20,0.10); this.beep(90,0.10,"sawtooth",0.05); break;
+      case "explode_soft": this.noise(0.14,0.08); this.beep(110,0.09,"triangle",0.04); break;
+      case "boom":         this.noise(0.28,0.12); this.beep(70,0.14,"sawtooth",0.06); break;
+      case "boom_soft":    this.noise(0.22,0.10); this.beep(95,0.12,"triangle",0.05); break;
+      case "wave":         this.beep(260,0.10,"sine",0.05); this.beep(420,0.10,"sine",0.04); break;
+      case "xp":           this.beep(980,0.05,"sine",0.04); break;
+      case "proc":         this.beep(880,0.08,"square",0.06); this.beep(1180,0.06,"sine",0.04); break;
+      case "ult":          this.beep(300,0.16,"sawtooth",0.07); this.beep(620,0.12,"square",0.05); break;
+      case "ult_soft":     this.beep(260,0.14,"triangle",0.06); break;
+      case "mark":         this.beep(640,0.10,"square",0.06); break;
+      case "chill":        this.beep(320,0.08,"sine",0.05); break;
+      case "trap":         this.beep(420,0.10,"triangle",0.05); break;
+      case "trap_hit":     this.beep(220,0.10,"square",0.06); this.noise(0.10,0.06); break;
+      case "respawn":      this.beep(520,0.12,"sine",0.06); this.beep(820,0.10,"sine",0.05); break;
+      case "tick_soft":    this.beep(900,0.03,"triangle",0.025); break;
+      case "tower":        this.beep(140,0.08,"square",0.06); break;
+      case "deny":         this.beep(120,0.08,"square",0.05); break;
+    }
+  }
+};
+
+/* =========================================================
+   // Render
+   ========================================================= */
+function draw(){
+  ctx.clearRect(0,0,W,H);
+
+  // camera
+  const player = GAME.heroes[0];
+  if (GAME.state==="PLAYING" && GAME.camFollow && player && player.alive){
+    const s = U.expSmoothing(GAME.dt, 6.0);
+    GAME.camX = U.lerp(GAME.camX, player.x, s);
+    GAME.camY = U.lerp(GAME.camY, player.y, s);
+  }
+
+  const halfW = W*0.5, halfH = H*0.5;
+  GAME.camX = U.clamp(GAME.camX, halfW, World.W-halfW);
+  GAME.camY = U.clamp(GAME.camY, halfH, World.H-halfH);
+
+  ctx.save();
+  ctx.translate(-Math.floor(GAME.camX-halfW), -Math.floor(GAME.camY-halfH));
+
+  drawMap();
+  drawBrush();
+  drawLaneGuides();
+  drawStructures();
+  drawTraps();
+  drawUnits();
+  drawProjectiles();
+  drawParticlesWorld();
+  drawTelegraphs();
+
+  ctx.restore();
+
+  drawHUD();
+  drawMobileControls();
+  drawMessages();
+  drawMinimap();
+  drawFloatingText();
+
+  if (GAME.state==="MENU") drawMenu();
+  if (GAME.state==="HOWTO") drawHowTo();
+  if (GAME.state==="PAUSED") drawPause();
+  if (GAME.state==="ENDED") drawEnd();
+}
+
+function worldToScreen(wx,wy){
+  const halfW=W*0.5, halfH=H*0.5;
+  return [ wx - (GAME.camX-halfW), wy - (GAME.camY-halfH) ];
+}
+
+function drawMap(){
+  const grad = ctx.createLinearGradient(0,0,World.W,World.H);
+  grad.addColorStop(0,"#0f1a12");
+  grad.addColorStop(1,"#0c1410");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0,0,World.W,World.H);
+
+  ctx.globalAlpha = 0.10;
+  ctx.fillStyle = "#1b2a1f";
+  for (let y=0;y<World.H;y+=60){
+    for (let x=0;x<World.W;x+=60){
+      if (((x/60 + y/60)|0)%2===0) ctx.fillRect(x,y,60,60);
+    }
+  }
+  ctx.globalAlpha=1;
+
+  drawBase(0,180,World.H/2);
+  drawBase(1,World.W-180,World.H/2);
+}
+
+function drawBase(team,x,y){
+  const col = team===0 ? "#ffd36d" : "#9fe8ff";
+  ctx.save();
+  ctx.translate(x,y);
+  ctx.fillStyle="#0b0f14";
+  ctx.beginPath(); ctx.arc(0,0,88,0,Math.PI*2); ctx.fill();
+  ctx.strokeStyle=col; ctx.lineWidth=4;
+  ctx.beginPath(); ctx.arc(0,0,86,0,Math.PI*2); ctx.stroke();
+
+  ctx.globalAlpha=0.15;
+  ctx.fillStyle=col;
+  ctx.beginPath(); ctx.arc(0,0,62,0,Math.PI*2); ctx.fill();
+  ctx.globalAlpha=1;
+
+  ctx.fillStyle=col;
+  ctx.font="bold 18px sans-serif";
+  ctx.textAlign="center";
+  ctx.fillText(team===0?"BASE A":"BASE B",0,6);
+  ctx.restore();
+}
+
+function drawLaneGuides(){
+  ctx.save();
+  ctx.globalAlpha=0.16;
+  for (const lane of World.lanes){
+    ctx.strokeStyle="#cfe8d3";
+    ctx.lineWidth=10;
+    ctx.lineCap="round";
+    ctx.beginPath();
+    for (let i=0;i<lane.wps.length;i++){
+      const p=lane.wps[i];
+      if (i===0) ctx.moveTo(p.x,p.y);
+      else ctx.lineTo(p.x,p.y);
+    }
+    ctx.stroke();
+  }
+  ctx.globalAlpha=1;
+  ctx.restore();
+}
+
+function drawBrush(){
+  ctx.save();
+  for (const b of World.brush){
+    ctx.globalAlpha=0.22;
+    ctx.fillStyle="#25402f";
+    ctx.fillRect(b.x,b.y,b.w,b.h);
+    ctx.globalAlpha=0.25;
+    ctx.strokeStyle="#6bbd7d";
+    ctx.lineWidth=2;
+    ctx.strokeRect(b.x+1,b.y+1,b.w-2,b.h-2);
+    ctx.globalAlpha=1;
+  }
+  ctx.restore();
+}
+
+function drawStructures(){
+  for (const tw of GAME.towers) if (tw.alive) drawTower(tw);
+  for (const c of GAME.cores) if (c.alive) drawCore(c);
+}
+
+function drawHpBarLocal(hp,hpMax,y,w,col){
+  const pct = U.clamp(hp/hpMax,0,1);
+  ctx.save();
+  ctx.translate(-w/2, y);
+  ctx.fillStyle="rgba(0,0,0,0.55)";
+  ctx.fillRect(0,0,w,7);
+  ctx.fillStyle=col;
+  ctx.fillRect(1,1,(w-2)*pct,5);
+  ctx.strokeStyle="rgba(255,255,255,0.10)";
+  ctx.strokeRect(0,0,w,7);
+  ctx.restore();
+}
+
+function drawTower(tw){
+  const col = tw.team===0 ? "#ffd36d" : "#9fe8ff";
+  ctx.save(); ctx.translate(tw.x,tw.y);
+
+  ctx.fillStyle="#0b0f14";
+  ctx.beginPath(); ctx.arc(0,0,tw.r,0,Math.PI*2); ctx.fill();
+
+  ctx.globalAlpha=0.18;
+  ctx.fillStyle=col;
+  ctx.beginPath(); ctx.arc(0,0,tw.r-6,0,Math.PI*2); ctx.fill();
+  ctx.globalAlpha=1;
+
+  ctx.strokeStyle=col; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.arc(0,0,tw.r,0,Math.PI*2); ctx.stroke();
+
+  ctx.fillStyle=col;
+  ctx.font="bold 12px sans-serif";
+  ctx.textAlign="center";
+  ctx.fillText(`${tw.lane[0]}${tw.idx}`,0,4);
+
+  drawHpBarLocal(tw.hp,tw.hpMax,tw.r+8,40,col);
+  ctx.restore();
+}
+
+function drawCore(c){
+  const col = c.team===0 ? "#ffd36d" : "#9fe8ff";
+  ctx.save(); ctx.translate(c.x,c.y);
+
+  ctx.fillStyle="#06080c";
+  ctx.beginPath(); ctx.arc(0,0,c.r,0,Math.PI*2); ctx.fill();
+
+  ctx.globalAlpha=0.22;
+  ctx.fillStyle=col;
+  ctx.beginPath(); ctx.arc(0,0,c.r-10,0,Math.PI*2); ctx.fill();
+  ctx.globalAlpha=1;
+
+  ctx.strokeStyle=col; ctx.lineWidth=4;
+  ctx.beginPath(); ctx.arc(0,0,c.r,0,Math.PI*2); ctx.stroke();
+
+  ctx.fillStyle=col;
+  ctx.font="bold 14px sans-serif";
+  ctx.textAlign="center";
+  ctx.fillText("CORE",0,5);
+
+  drawHpBarLocal(c.hp,c.hpMax,c.r+10,60,col);
+  ctx.restore();
+}
+
+function drawTraps(){
+  const now=U.now();
+  for (const tr of GAME.traps){
+    ctx.save(); ctx.translate(tr.x,tr.y);
+    const armed = now>=tr.armedAt;
+    ctx.globalAlpha = armed ? 0.55 : 0.25;
+    ctx.strokeStyle="#9fe8ff";
+    ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(0,0,tr.r,0,Math.PI*2); ctx.stroke();
+    ctx.globalAlpha = armed ? 0.18 : 0.08;
+    ctx.fillStyle="#9fe8ff";
+    ctx.beginPath(); ctx.arc(0,0,tr.r-6,0,Math.PI*2); ctx.fill();
+    ctx.globalAlpha=1;
+    ctx.restore();
+  }
+}
+
+function drawUnits(){
+  const list=[];
+  for (const m of GAME.minions) if (m.alive) list.push(m);
+  for (const h of GAME.heroes) if (h.alive) list.push(h);
+  list.sort((a,b)=>a.y-b.y);
+
+  for (const u of list){
+    if (u.type==="MINION") drawMinion(u);
+    else drawHero(u);
+  }
+}
+
+function drawMinion(m){
+  const col = m.team===0 ? "#ffd36d" : "#9fe8ff";
+  ctx.save(); ctx.translate(m.x,m.y);
+
+  ctx.fillStyle="#0b0f14";
+  ctx.beginPath(); ctx.arc(0,0,m.r,0,Math.PI*2); ctx.fill();
+
+  ctx.globalAlpha=0.20;
+  ctx.fillStyle=col;
+  ctx.beginPath(); ctx.arc(0,0,m.r-4,0,Math.PI*2); ctx.fill();
+  ctx.globalAlpha=1;
+
+  ctx.fillStyle=col;
+  ctx.font="bold 10px sans-serif";
+  ctx.textAlign="center";
+  ctx.fillText(m.kind==="MELEE"?"M":"R",0,3);
+
+  const pct = U.clamp(m.hp/m.hpMax,0,1);
+  ctx.fillStyle="rgba(0,0,0,0.55)";
+  ctx.fillRect(-16,-m.r-12,32,5);
+  ctx.fillStyle=col;
+  ctx.fillRect(-15,-m.r-11,30*pct,3);
+
+  ctx.restore();
+}
+
+function drawHero(h){
+  const col = h.team===0 ? "#ffd36d" : "#9fe8ff";
+  const now = U.now();
+
+  ctx.save(); ctx.translate(h.x,h.y);
+  if (h.hidden) ctx.globalAlpha=0.28;
+
+  ctx.strokeStyle=col; ctx.lineWidth=3;
+  ctx.beginPath(); ctx.arc(0,0,h.r+3,0,Math.PI*2); ctx.stroke();
+
+  ctx.fillStyle="#0b0f14";
+  ctx.beginPath(); ctx.arc(0,0,h.r,0,Math.PI*2); ctx.fill();
+
+  ctx.globalAlpha = (h.hidden ? 0.28 : 1) * 0.18;
+  ctx.fillStyle=col;
+  ctx.beginPath(); ctx.arc(0,0,h.r-5,0,Math.PI*2); ctx.fill();
+  ctx.globalAlpha = h.hidden ? 0.28 : 1;
+
+  const [fx,fy] = U.norm(h.facingX,h.facingY);
+  ctx.strokeStyle=col; ctx.lineWidth=3; ctx.lineCap="round";
+  ctx.beginPath(); ctx.moveTo(0,0); ctx.lineTo(fx*(h.r+14), fy*(h.r+14)); ctx.stroke();
+
+  ctx.fillStyle=col;
+  ctx.font="bold 12px sans-serif";
+  ctx.textAlign="center";
+  ctx.fillText(`${h.name}  Lv.${h.level}`,0,-h.r-20);
+
+  const hpPct = U.clamp(h.hp/h.hpMax,0,1);
+  const mpPct = U.clamp(h.mana/h.manaMax,0,1);
+
+  ctx.globalAlpha=0.85;
+  ctx.fillStyle="rgba(0,0,0,0.55)";
+  ctx.fillRect(-28,-h.r-12,56,7);
+  ctx.fillStyle=col;
+  ctx.fillRect(-27,-h.r-11,54*hpPct,5);
+
+  ctx.fillStyle="rgba(0,0,0,0.55)";
+  ctx.fillRect(-28,-h.r-4,56,5);
+  ctx.fillStyle="#7ad1ff";
+  ctx.fillRect(-27,-h.r-3,54*mpPct,3);
+
+  if (now < h.markedUntil){
+    ctx.globalAlpha=0.9;
+    ctx.strokeStyle="#ffd36d";
+    ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(0,0,h.r+10,0,Math.PI*2); ctx.stroke();
+  }
+  if (now < h.invulnUntil){
+    ctx.globalAlpha=0.45;
+    ctx.strokeStyle="#ffffff";
+    ctx.lineWidth=2;
+    ctx.beginPath(); ctx.arc(0,0,h.r+16,0,Math.PI*2); ctx.stroke();
+  }
+
+  ctx.globalAlpha=1;
+  ctx.restore();
+}
+
+function drawProjectiles(){
+  const pool=GAME.projPool;
+  for (let i=0;i<pool.length;i++){
+    const p=pool[i];
+    if (!p.active) continue;
+
+    if (p.kind==="DART" || p.kind==="GOLDEN_DART" || p.kind==="MARK_DAGGER"){
+      const col = (p.kind==="GOLDEN_DART") ? "#ffd36d" : "#ffe7a9";
+      ctx.save();
+      ctx.strokeStyle=col;
+      ctx.lineWidth=(p.kind==="MARK_DAGGER")?4:3;
+      ctx.lineCap="round";
+      ctx.beginPath();
+      ctx.moveTo(p.x,p.y);
+      ctx.lineTo(p.x - p.vx*0.02, p.y - p.vy*0.02);
+      ctx.stroke();
+      ctx.fillStyle=col;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
+      ctx.restore();
+    }else if (p.kind==="FROST" || p.kind==="AI_SLOWSHOT" || p.kind==="ICE_PIERCE"){
+      const col = (p.kind==="ICE_PIERCE") ? "#9fe8ff" : "#c9f3ff";
+      ctx.save();
+      ctx.strokeStyle=col;
+      ctx.lineWidth=(p.kind==="ICE_PIERCE")?5:3;
+      ctx.lineCap="round";
+      ctx.beginPath();
+      ctx.moveTo(p.x,p.y);
+      ctx.lineTo(p.x - p.vx*0.02, p.y - p.vy*0.02);
+      ctx.stroke();
+      ctx.fillStyle=col;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
+      ctx.restore();
+    }else{
+      const col = (p.team===0) ? "#ffd36d" : "#9fe8ff";
+      ctx.save();
+      ctx.fillStyle=col;
+      ctx.beginPath(); ctx.arc(p.x,p.y,p.r,0,Math.PI*2); ctx.fill();
+      ctx.restore();
+    }
+  }
+}
+
+function drawParticlesWorld(){
+  const pool=GAME.partPool;
+  for (let i=0;i<pool.length;i++){
+    const p=pool[i];
+    if (!p.active) continue;
+
+    ctx.save();
+    ctx.globalAlpha = p.a * (p.kind==="smoke" ? 0.35 : 0.9);
+
+    if (p.kind==="ring"){
+      ctx.strokeStyle=p.color;
+      ctx.lineWidth=2;
+      const r = p.size*(1+(1-p.a)*1.6);
+      ctx.beginPath(); ctx.arc(p.x,p.y,r,0,Math.PI*2); ctx.stroke();
+    }else{
+      ctx.fillStyle=p.color;
+      const s = p.size*(p.kind==="smoke" ? (1+(1-p.a)*1.8) : 1);
+      ctx.beginPath(); ctx.arc(p.x,p.y,s,0,Math.PI*2); ctx.fill();
+    }
+    ctx.restore();
+  }
+}
+
+function drawTelegraphs(){
+  const now=U.now();
+
+  // Player ult telegraph while channeling
+  const player = GAME.heroes[0];
+  if (player && player.alive && now < player.channelUntil && player.kit==="PLAYER"){
+    const s = TUNING.skill.ult;
+    const [nx,ny] = U.norm(player.facingX,player.facingY);
+    const cx = player.x + nx*(player.r+20);
+    const cy = player.y + ny*(player.r+20);
+
+    ctx.save();
+    ctx.globalAlpha=0.20;
+    ctx.fillStyle="#ffd36d";
+    ctx.translate(cx,cy);
+    ctx.rotate(Math.atan2(ny,nx));
+    ctx.fillRect(0, -s.width/2, s.len, s.width);
+    ctx.globalAlpha=0.35;
+    ctx.strokeStyle="#ffe7a9";
+    ctx.lineWidth=2;
+    ctx.strokeRect(0, -s.width/2, s.len, s.width);
+    ctx.restore();
+  }
+
+  // All AI ult telegraphs
+  for (const h of GAME.heroes){
+    if (!h.alive || h.kit!=="AI") continue;
+    if (h._aiUlt && !h._aiUlt.fired && now < h.channelUntil){
+      const s = TUNING.aiSkill.ult;
+      const [nx,ny] = U.norm(h.facingX,h.facingY);
+      const cx = h.x + nx*(h.r+20);
+      const cy = h.y + ny*(h.r+20);
+
+      ctx.save();
+      ctx.globalAlpha=0.18;
+      ctx.fillStyle="#9fe8ff";
+      ctx.translate(cx,cy);
+      ctx.rotate(Math.atan2(ny,nx));
+      ctx.fillRect(0, -s.width/2, s.len, s.width);
+      ctx.globalAlpha=0.35;
+      ctx.strokeStyle="#c9f3ff";
+      ctx.lineWidth=2;
+      ctx.strokeRect(0, -s.width/2, s.len, s.width);
+      ctx.restore();
+    }
+  }
+}
+
+function drawHUD(){
+  if (!["PLAYING","PAUSED","ENDED"].includes(GAME.state)) return;
+
+  const pad=TUNING.ui.safePad;
+  const player = GAME.heroes[0];
+
+  // top bar
+  ctx.save();
+  ctx.fillStyle="rgba(0,0,0,0.55)";
+  ctx.fillRect(0,0,W,44);
+
+  ctx.fillStyle="#e8eef7";
+  ctx.font="bold 16px sans-serif";
+  ctx.textAlign="center";
+  const t = Math.max(0, Math.ceil(GAME.matchLeft));
+  const mm = String(Math.floor(t/60)).padStart(2,"0");
+  const ss = String(t%60).padStart(2,"0");
+  ctx.fillText(`${mm}:${ss}   |   Kills ${GAME.kills.team0} - ${GAME.kills.team1}`, W/2, 28);
+
+  const coreA = GAME.cores.find(c=>c.team===0);
+  const coreB = GAME.cores.find(c=>c.team===1);
+  if (coreA && coreB){
+    drawTinyBar(18,12,160,10, coreA.hp/coreA.hpMax, "#ffd36d", "CORE A");
+    drawTinyBar(W-18-160,12,160,10, coreB.hp/coreB.hpMax, "#9fe8ff", "CORE B");
+  }
+  ctx.restore();
+
+  if (!player) return;
+
+  // bottom HUD
+  const mobile = isTouchDevice() && Math.min(W,H) < 700;
+  const hudH=mobile ? 92 : 130;
+  ctx.save();
+  ctx.fillStyle="rgba(0,0,0,0.55)";
+  ctx.fillRect(0,H-hudH,W,hudH);
+
+  const x0=pad;
+  const y0=H-hudH+pad;
+
+  drawLabeledBar(x0,y0,320,16, player.hp/player.hpMax, "#ffd36d", `HP ${Math.ceil(player.hp)}/${player.hpMax}`);
+  drawLabeledBar(x0,y0+24,320,12, player.mana/player.manaMax, "#7ad1ff", `Mana ${Math.ceil(player.mana)}/${player.manaMax}`);
+  drawLabeledBar(x0,y0+44,320,10, player.xp/player.xpToNext, "#cfe8d3", `Lv.${player.level}  XP ${Math.floor(player.xp)}/${player.xpToNext}`);
+
+  ctx.fillStyle="#e8eef7";
+  ctx.font="12px sans-serif";
+  ctx.textAlign="left";
+  if (!mobile){
+    ctx.fillText(`Passive: hits ${player.passiveHits}/${TUNING.player.passiveN} ${player.passiveReady?"(READY!)":""}`, x0, y0+72);
+    ctx.fillText(`Basic (J): ${CONFIG.playerAutoFireHoldJ ? "HOLD-J Auto" : "Tap-J"}`, x0, y0+92);
+  }
+
+  const sx = mobile ? x0 + 338 : x0 + 360;
+  if (!mobile){
+    drawSkillBox(sx+0,   y0, "K", "Rapid", player.cdK, "#ffd36d");
+    drawSkillBox(sx+86,  y0, "L", "Roll",  player.cdL, "#ffd36d");
+    drawSkillBox(sx+172, y0, "U", "Mark",  player.cdU, "#ffd36d");
+    drawSkillBox(sx+258, y0, "I", "Ult",   player.cdI, "#ffd36d");
+  }
+
+  // right panel: nearest enemy hero to player
+  const enemy = nearestEnemyToPlayer(player);
+  const ax = W - pad - 320;
+  if (enemy && !mobile){
+    drawLabeledBar(ax, y0, 320, 16, enemy.hp/enemy.hpMax, "#9fe8ff", `${enemy.name} HP ${Math.ceil(enemy.hp)}/${enemy.hpMax}`);
+    drawLabeledBar(ax, y0+24, 320, 12, enemy.mana/enemy.manaMax, "#7ad1ff", `Mana ${Math.ceil(enemy.mana)}/${enemy.manaMax}`);
+    ctx.fillStyle="#e8eef7";
+    ctx.font="12px sans-serif";
+    ctx.textAlign="left";
+    ctx.fillText(`Enemy lane: ${enemy.lane}`, ax, y0+54);
+    ctx.fillText(`Difficulty: ${CONFIG.difficulty}`, ax, y0+74);
+  }else if (!mobile){
+    ctx.fillStyle="#e8eef7";
+    ctx.font="12px sans-serif";
+    ctx.textAlign="left";
+    ctx.fillText(`Difficulty: ${CONFIG.difficulty}`, ax, y0+24);
+  }
+
+  ctx.restore();
+}
+
+function nearestEnemyToPlayer(player){
+  let best=null, bestD2=1e18;
+  for (const h of GAME.heroes){
+    if (!h.alive || h.team===player.team) continue;
+    const d2 = U.dist2(player.x,player.y,h.x,h.y);
+    if (d2 < bestD2){ bestD2=d2; best=h; }
+  }
+  return best;
+}
+
+function drawTinyBar(x,y,w,h,pct,col,label){
+  pct = U.clamp(pct,0,1);
+  ctx.fillStyle="rgba(0,0,0,0.45)";
+  ctx.fillRect(x,y,w,h);
+  ctx.fillStyle=col;
+  ctx.fillRect(x+1,y+1,(w-2)*pct,h-2);
+  ctx.strokeStyle="rgba(255,255,255,0.14)";
+  ctx.strokeRect(x,y,w,h);
+  ctx.fillStyle="#e8eef7";
+  ctx.font="10px sans-serif";
+  ctx.textAlign="left";
+  ctx.fillText(label,x+2,y+h+11);
+}
+function drawLabeledBar(x,y,w,h,pct,col,label){
+  pct = U.clamp(pct,0,1);
+  ctx.fillStyle="rgba(0,0,0,0.45)";
+  ctx.fillRect(x,y,w,h);
+  ctx.fillStyle=col;
+  ctx.fillRect(x+1,y+1,(w-2)*pct,h-2);
+  ctx.strokeStyle="rgba(255,255,255,0.12)";
+  ctx.strokeRect(x,y,w,h);
+  ctx.fillStyle="#e8eef7";
+  ctx.font="12px sans-serif";
+  ctx.textAlign="left";
+  ctx.fillText(label,x,y-4);
+}
+function drawSkillBox(x,y,key,label,cd,col){
+  ctx.save();
+  ctx.fillStyle="rgba(255,255,255,0.06)";
+  ctx.fillRect(x,y,78,78);
+  ctx.strokeStyle="rgba(255,255,255,0.12)";
+  ctx.strokeRect(x+0.5,y+0.5,77,77);
+
+  ctx.fillStyle=col;
+  ctx.font="bold 20px sans-serif";
+  ctx.textAlign="center";
+  ctx.fillText(key, x+20, y+28);
+
+  ctx.fillStyle="#e8eef7";
+  ctx.font="12px sans-serif";
+  ctx.fillText(label, x+39, y+52);
+
+  if (cd>0){
+    ctx.globalAlpha=0.55;
+    ctx.fillStyle="#000";
+    ctx.fillRect(x,y,78,78);
+    ctx.globalAlpha=1;
+    ctx.fillStyle="#ffd36d";
+    ctx.font="bold 18px sans-serif";
+    ctx.fillText(cd.toFixed(1), x+39, y+36);
+  }
+  ctx.restore();
+}
+
+function drawMessages(){
+  let y=56;
+  for (let i=0;i<GAME.msgQueue.length;i++){
+    const m=GAME.msgQueue[i];
+    const a=U.clamp(m.t/m.max,0,1);
+    ctx.save();
+    ctx.globalAlpha=0.3+0.7*a;
+    ctx.fillStyle="rgba(0,0,0,0.55)";
+    ctx.fillRect(W/2-220, y-18, 440, 28);
+    ctx.fillStyle="#e8eef7";
+    ctx.font="bold 14px sans-serif";
+    ctx.textAlign="center";
+    ctx.fillText(m.text, W/2, y);
+    ctx.restore();
+    y += 34;
+  }
+}
+function drawFloatingText(){
+  for (const ft of FloatingText){
+    const a=U.clamp(ft.t/ft.max,0,1);
+    const [sx,sy]=worldToScreen(ft.x,ft.y);
+    ctx.save();
+    ctx.globalAlpha=a;
+    ctx.fillStyle=ft.color;
+    ctx.font="bold 14px sans-serif";
+    ctx.textAlign="center";
+    ctx.fillText(ft.text, sx, sy);
+    ctx.restore();
+  }
+}
+function drawMinimap(){
+  if (GAME.state==="MENU" || GAME.state==="HOWTO") return;
+
+  const w=TUNING.ui.minimapW, h=TUNING.ui.minimapH;
+  const pad=TUNING.ui.safePad;
+  const x0=W-pad-w;
+  const y0=H-pad-h-130;
+
+  ctx.save();
+  ctx.fillStyle="rgba(0,0,0,0.55)";
+  ctx.fillRect(x0,y0,w,h);
+  ctx.strokeStyle="rgba(255,255,255,0.12)";
+  ctx.strokeRect(x0+0.5,y0+0.5,w-1,h-1);
+
+  const sx=w/World.W;
+  const sy=h/World.H;
+
+  // lanes
+  ctx.globalAlpha=0.28;
+  ctx.strokeStyle="#cfe8d3";
+  ctx.lineWidth=2;
+  for (const lane of World.lanes){
+    ctx.beginPath();
+    for (let i=0;i<lane.wps.length;i++){
+      const p=lane.wps[i];
+      const mx=x0+p.x*sx;
+      const my=y0+p.y*sy;
+      if (i===0) ctx.moveTo(mx,my);
+      else ctx.lineTo(mx,my);
+    }
+    ctx.stroke();
+  }
+  ctx.globalAlpha=1;
+
+  // towers/cores
+  for (const t of GAME.towers){
+    if (!t.alive) continue;
+    ctx.fillStyle = t.team===0 ? "#ffd36d" : "#9fe8ff";
+    ctx.fillRect(x0 + t.x*sx - 2, y0 + t.y*sy - 2, 4,4);
+  }
+  for (const c of GAME.cores){
+    if (!c.alive) continue;
+    ctx.fillStyle = c.team===0 ? "#ffd36d" : "#9fe8ff";
+    ctx.fillRect(x0 + c.x*sx - 3, y0 + c.y*sy - 3, 6,6);
+  }
+
+  // minions
+  ctx.globalAlpha=0.65;
+  for (const m of GAME.minions){
+    if (!m.alive) continue;
+    ctx.fillStyle = m.team===0 ? "#ffd36d" : "#9fe8ff";
+    ctx.fillRect(x0 + m.x*sx - 1, y0 + m.y*sy - 1, 2,2);
+  }
+  ctx.globalAlpha=1;
+
+  // heroes
+  for (const h0 of GAME.heroes){
+    if (!h0.alive) continue;
+    ctx.fillStyle = h0.team===0 ? "#ffd36d" : "#9fe8ff";
+    ctx.beginPath();
+    ctx.arc(x0 + h0.x*sx, y0 + h0.y*sy, h0.isPlayer ? 4 : 3.2, 0, Math.PI*2);
+    ctx.fill();
+  }
+
+  // camera view
+  ctx.globalAlpha=0.25;
+  ctx.strokeStyle="#ffffff";
+  ctx.lineWidth=1;
+  const halfW=W*0.5, halfH=H*0.5;
+  const cx=GAME.camX, cy=GAME.camY;
+  const vx0=U.clamp(cx-halfW,0,World.W);
+  const vy0=U.clamp(cy-halfH,0,World.H);
+  const vx1=U.clamp(cx+halfW,0,World.W);
+  const vy1=U.clamp(cy+halfH,0,World.H);
+  ctx.strokeRect(x0 + vx0*sx, y0 + vy0*sy, (vx1-vx0)*sx, (vy1-vy0)*sy);
+  ctx.globalAlpha=1;
+
+  ctx.fillStyle="#e8eef7";
+  ctx.font="12px sans-serif";
+  ctx.textAlign="left";
+  ctx.fillText("Mini-map", x0+8, y0+16);
+
+  ctx.restore();
+}
+
+function drawMenu(){
+  const items=["Play","How to play","Difficulty","Quit (Reload tab)"];
+  const diffs=["Easy","Normal","Hard"];
+
+  ctx.save();
+  ctx.fillStyle="rgba(0,0,0,0.72)";
+  ctx.fillRect(0,0,W,H);
+
+  ctx.fillStyle="#e8eef7";
+  ctx.font="bold 28px sans-serif";
+  ctx.textAlign="center";
+  ctx.fillText("DARTHUNT MOBA (Offline)", W/2, 120);
+
+  ctx.font="14px sans-serif";
+  ctx.fillStyle="#cfe8d3";
+  ctx.fillText("WASD move • J basic • K/L/U skills • I ultimate • Esc pause", W/2, 150);
+  ctx.fillText("Đã thêm 4 AI (Top/Bot 2 bên) • Map không còn vật cản", W/2, 172);
+
+  const px=W/2-260, py=220, pw=520, ph=260;
+  ctx.fillStyle="rgba(255,255,255,0.06)";
+  ctx.fillRect(px,py,pw,ph);
+  ctx.strokeStyle="rgba(255,255,255,0.14)";
+  ctx.strokeRect(px+0.5,py+0.5,pw-1,ph-1);
+
+    ctx.textAlign="left";
+  ctx.font="bold 18px sans-serif";
+
+  for (let i=0;i<items.length;i++){
+    const y = py + 56 + i*52;
+    const sel = (i===GAME.menuIndex);
+
+    if (sel){
+      ctx.fillStyle="rgba(255,211,109,0.16)";
+      ctx.fillRect(px+14, y-28, pw-28, 40);
+      ctx.strokeStyle="rgba(255,211,109,0.45)";
+      ctx.strokeRect(px+14.5, y-27.5, pw-29, 39);
+    }
+
+    ctx.fillStyle = sel ? "#ffd36d" : "#e8eef7";
+    let text = items[i];
+
+    if (text==="Difficulty"){
+      text = `Difficulty: ${diffs[GAME.menuDifficultyIndex]}`;
+    }
+
+    ctx.fillText(text, px+30, y);
+  }
+
+  ctx.font="13px sans-serif";
+  ctx.fillStyle="#cfe8d3";
+  ctx.textAlign="center";
+  ctx.fillText("↑/↓ chọn • Enter xác nhận • ←/→ đổi Difficulty", W/2, py+ph+36);
+  ctx.restore();
+
+  // Menu input
+  if (consumeJust("ArrowUp")) GAME.menuIndex = (GAME.menuIndex + items.length - 1) % items.length;
+  if (consumeJust("ArrowDown")) GAME.menuIndex = (GAME.menuIndex + 1) % items.length;
+
+  if (consumeJust("ArrowLeft")){
+    if (GAME.menuIndex===2) GAME.menuDifficultyIndex = (GAME.menuDifficultyIndex + 3 - 1) % 3;
+  }
+  if (consumeJust("ArrowRight")){
+    if (GAME.menuIndex===2) GAME.menuDifficultyIndex = (GAME.menuDifficultyIndex + 1) % 3;
+  }
+
+  if (consumeJust("Enter")){
+    if (GAME.menuIndex===0){
+      CONFIG.difficulty = ["Easy","Normal","Hard"][GAME.menuDifficultyIndex];
+      resetMatch();
+      GAME.state="PLAYING";
+      pushMsg("Match Start!", 1.6);
+      Audio.play("wave");
+    }else if (GAME.menuIndex===1){
+      GAME.state="HOWTO";
+    }else if (GAME.menuIndex===2){
+      CONFIG.difficulty = ["Easy","Normal","Hard"][GAME.menuDifficultyIndex];
+      pushMsg(`Difficulty: ${CONFIG.difficulty}`, 1.2);
+      Audio.play("xp");
+    }else{
+      // Quit: user reloads tab
+      pushMsg("Reload tab to quit.", 1.5);
+      Audio.play("deny");
+    }
+  }
+}
+
+function drawHowTo(){
+  ctx.save();
+  ctx.fillStyle="rgba(0,0,0,0.82)";
+  ctx.fillRect(0,0,W,H);
+
+  ctx.fillStyle="#e8eef7";
+  ctx.font="bold 26px sans-serif";
+  ctx.textAlign="center";
+  ctx.fillText("How to play", W/2, 92);
+
+  ctx.font="14px sans-serif";
+  ctx.fillStyle="#cfe8d3";
+  const lines = [
+    "Mục tiêu: phá CORE địch để thắng.",
+    "Điều khiển (không dùng chuột để chơi):",
+    " - Di chuyển: W A S D (có normalize khi đi chéo).",
+    " - Mobile: joystick trái để di chuyển, ATK phải để bắn; K/L/U/I dùng các nút kỹ năng.",
+    " - Đánh thường: giữ J để bắn phi tiêu theo HƯỚNG nhân vật.",
+    " - K: Rapid Darts (tăng tốc bắn / burst).",
+    " - L: Roll (lăn né theo hướng WASD; nếu không có input sẽ lùi ngược hướng).",
+    " - U: Marking Dagger (đánh dấu mục tiêu, phi tiêu gây thêm dmg).",
+    " - I: Ultimate Golden Barrage (niệm rồi bắn mưa phi tiêu thẳng, có telegraph).",
+    "AI: đã có 5 AI tổng cộng (2 đồng minh Top/Bot, 3 địch Top/Mid/Bot).",
+    "Map: không có vật cản; có brush (ẩn nếu đứng yên trong đó > 0.6s và không tấn công).",
+    "",
+    "Phím khác:",
+    " - Esc: Pause",
+    " - Space: bật/tắt camera follow (khi free cam: dùng Arrow Keys để pan)",
+    "",
+    "Nhấn Enter để quay lại Menu."
+  ];
+
+  let y=140;
+  for (const s of lines){
+    ctx.fillText(s, W/2, y);
+    y += 22;
+  }
+
+  ctx.restore();
+
+  if (consumeJust("Enter") || consumeJust("Escape")){
+    GAME.state="MENU";
+  }
+}
+
+function drawPause(){
+  ctx.save();
+  ctx.fillStyle="rgba(0,0,0,0.55)";
+  ctx.fillRect(0,0,W,H);
+
+  ctx.fillStyle="#e8eef7";
+  ctx.font="bold 30px sans-serif";
+  ctx.textAlign="center";
+  ctx.fillText("PAUSED", W/2, H/2 - 40);
+
+  ctx.font="14px sans-serif";
+  ctx.fillStyle="#cfe8d3";
+  ctx.fillText("Nhấn Esc để tiếp tục • Enter để về Menu • R để Restart", W/2, H/2);
+
+  ctx.restore();
+
+  if (consumeJust("Escape")) GAME.state="PLAYING";
+  if (consumeJust("Enter")) GAME.state="MENU";
+  if (consumeJust("KeyR")){
+    resetMatch();
+    GAME.state="PLAYING";
+  }
+}
+
+function drawEnd(){
+  ctx.save();
+  ctx.fillStyle="rgba(0,0,0,0.72)";
+  ctx.fillRect(0,0,W,H);
+
+  const victory = (GAME.winner==="TEAM 0");
+  ctx.fillStyle = victory ? "#ffd36d" : "#9fe8ff";
+  ctx.font="bold 34px sans-serif";
+  ctx.textAlign="center";
+  ctx.fillText(victory ? "VICTORY!" : "DEFEAT!", W/2, H/2 - 60);
+
+  ctx.fillStyle="#e8eef7";
+  ctx.font="14px sans-serif";
+  ctx.fillText("Enter: Menu   •   R: Restart", W/2, H/2 - 22);
+
+  ctx.fillStyle="#cfe8d3";
+  ctx.fillText(`Kills: ${GAME.kills.team0} - ${GAME.kills.team1}`, W/2, H/2 + 8);
+
+  ctx.restore();
+
+  if (consumeJust("Enter")) GAME.state="MENU";
+  if (consumeJust("KeyR")){
+    resetMatch();
+    GAME.state="PLAYING";
+  }
+}
+
+/* =========================================================
+   // Game loop + state update
+   ========================================================= */
+function updateMessages(dt){
+  for (let i=GAME.msgQueue.length-1;i>=0;i--){
+    const m=GAME.msgQueue[i];
+    m.t -= dt;
+    if (m.t<=0) GAME.msgQueue.splice(i,1);
+  }
+}
+
+function updatePlaying(dt){
+  GAME.matchLeft = Math.max(0, GAME.matchLeft - dt);
+
+  // Waves
+  GAME.nextWaveAt -= dt;
+  if (GAME.nextWaveAt <= 0){
+    spawnWave();
+    GAME.nextWaveAt = CONFIG.minionWaveSeconds;
+  }
+
+  updateHeroes(dt);
+  updateMinions(dt);
+  updateTowers(dt);
+  updateTraps(dt);
+  updateProjectiles(dt);
+  updateParticles(dt);
+  updateFloatingText(dt);
+  updateMessages(dt);
+
+  // End by time (optional): core HP compare
+  if (GAME.matchLeft <= 0 && GAME.state==="PLAYING"){
+    const a = GAME.cores.find(c=>c.team===0);
+    const b = GAME.cores.find(c=>c.team===1);
+    const ah = a ? a.hp/a.hpMax : 0;
+    const bh = b ? b.hp/b.hpMax : 0;
+    if (ah === bh){
+      // tie-break: kills
+      const victory = GAME.kills.team0 >= GAME.kills.team1;
+      GAME.winner = victory ? "TEAM 0" : "TEAM 1";
+    }else{
+      GAME.winner = (ah > bh) ? "TEAM 0" : "TEAM 1";
+    }
+    GAME.state="ENDED";
+    pushMsg(GAME.winner==="TEAM 0" ? "VICTORY (Time)!" : "DEFEAT (Time)!", 4.0);
+    Audio.play("boom_soft");
+  }
+}
+
+function clearJust(){
+  for (const k in Input.just) Input.just[k]=false;
+}
+
+let last = performance.now()/1000;
+function frame(){
+  const now = performance.now()/1000;
+  let dt = now - last;
+  last = now;
+  dt = U.clamp(dt, 0, 1/20); // dt clamp
+
+  GAME.t += dt;
+  GAME.dt = dt;
+
+  // global pause toggle
+  if (GAME.state==="PLAYING" && consumeJust("Escape")){
+    GAME.state="PAUSED";
+  }
+
+  if (GAME.state==="PLAYING"){
+    updatePlaying(dt);
+  }else if (GAME.state==="PAUSED"){
+    // keep particles subtle
+    updateParticles(dt*0.25);
+    updateFloatingText(dt*0.25);
+    updateMessages(dt*0.25);
+  }else if (GAME.state==="MENU"){
+    // idle anim
+    updateParticles(dt*0.15);
+    updateMessages(dt*0.15);
+  }else if (GAME.state==="HOWTO"){
+    updateParticles(dt*0.10);
+    updateMessages(dt*0.10);
+  }else if (GAME.state==="ENDED"){
+    updateParticles(dt*0.35);
+    updateFloatingText(dt*0.35);
+    updateMessages(dt*0.35);
+  }
+
+  draw();
+  clearJust();
+  requestAnimationFrame(frame);
+}
+
+/* =========================================================
+   // Boot
+   ========================================================= */
+(function init(){
+  // Default difficulty index sync
+  GAME.menuDifficultyIndex = ["Easy","Normal","Hard"].indexOf(CONFIG.difficulty);
+  if (GAME.menuDifficultyIndex<0) GAME.menuDifficultyIndex=1;
+
+  resetMatch();
+  GAME.state="MENU";
+
+  // focus canvas for key input
+  setTimeout(()=>canvas.focus(), 50);
+
+  requestAnimationFrame(frame);
+})();
+</script>
+</body>
+</html>
