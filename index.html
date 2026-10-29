@@ -1,381 +1,85 @@
 <!DOCTYPE html>
-<html lang="vi">
+<html lang="en">
 <head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Kho bài tập lớp</title>
-    <style>
-        :root {
-            color-scheme: light;
-            --ink: #202b28;
-            --muted: #64716c;
-            --line: #d9e2dd;
-            --surface: #ffffff;
-            --wash: #f2f6f3;
-            --accent: #176b54;
-            --accent-light: #e2f1e9;
-        }
-        body {
-            margin: 0;
-            background: var(--wash);
-            color: var(--ink);
-            font-family: "Segoe UI", sans-serif;
-        }
-        header {
-            padding: 28px max(20px, calc((100% - 1120px) / 2));
-            background: var(--surface);
-            border-bottom: 1px solid var(--line);
-        }
-        h1 { margin: 0 0 6px; font-size: 26px; }
-        header p { margin: 0; color: var(--muted); }
-        main { max-width: 1120px; margin: 0 auto; padding: 20px; }
-        .toolbar {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            margin-bottom: 14px;
-        }
-        h2 { margin: 0; font-size: 18px; }
-        #saveStatus { color: var(--muted); font-size: 13px; }
-        #assignmentList { display: grid; gap: 12px; }
-        .assignment {
-            padding: 16px;
-            background: var(--surface);
-            border: 1px solid var(--line);
-            border-radius: 6px;
-        }
-        .assignment-heading {
-            display: flex;
-            align-items: center;
-            justify-content: space-between;
-            gap: 12px;
-            margin-bottom: 12px;
-        }
-        .slot-number { color: var(--accent); font-weight: 700; }
-        .fields { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-        label { display: grid; gap: 6px; color: var(--muted); font-size: 13px; }
-        input, textarea, button, select { font: inherit; }
-        input[type="text"], textarea {
-            box-sizing: border-box;
-            width: 100%;
-            padding: 10px 11px;
-            color: var(--ink);
-            background: #fff;
-            border: 1px solid var(--line);
-            border-radius: 4px;
-        }
-        input:focus, textarea:focus { outline: 2px solid #9bcdb5; border-color: var(--accent); }
-        textarea { min-height: 100px; resize: vertical; }
-        .code-input {
-            min-height: 150px;
-            background: #f8faf8;
-            font-family: Consolas, "Courier New", monospace;
-            font-size: 13px;
-            tab-size: 4;
-        }
-        .wide { grid-column: 1 / -1; }
-        .custom-data-heading { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
-        .custom-data-heading strong { color: var(--ink); font-size: 14px; }
-        .custom-fields { margin-top: 4px; }
-        .custom-field {
-            display: grid;
-            grid-template-columns: minmax(110px, 1fr) 120px minmax(140px, 2fr) auto;
-            align-items: start;
-            gap: 8px;
-            margin-top: 8px;
-        }
-        .custom-field select {
-            box-sizing: border-box;
-            min-height: 39px;
-            padding: 8px;
-            color: var(--ink);
-            background: #fff;
-            border: 1px solid var(--line);
-            border-radius: 4px;
-        }
-        .custom-field input[type="checkbox"] { width: 20px; height: 20px; margin: 9px; }
-        .file-row { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; }
-        input[type="file"] { max-width: 100%; color: var(--muted); }
-        .file-link { color: var(--accent); overflow-wrap: anywhere; }
-        button {
-            padding: 7px 10px;
-            color: var(--muted);
-            background: transparent;
-            border: 1px solid var(--line);
-            border-radius: 4px;
-            cursor: pointer;
-        }
-        button:hover { color: var(--accent); border-color: var(--accent); }
-        @media (max-width: 640px) {
-            header { padding: 22px 18px; }
-            main { padding: 14px; }
-            .fields { grid-template-columns: 1fr; }
-            .wide { grid-column: auto; }
-            .toolbar { align-items: flex-start; flex-direction: column; }
-            .custom-field { grid-template-columns: 1fr 1fr auto; }
-            .custom-value { grid-column: 1 / -1; grid-row: 2; }
-        }
-    </style>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>HTML Game Arcade</title>
+  <style>
+    :root { color-scheme: dark; }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      min-height: 100vh;
+      display: grid;
+      place-items: center;
+      padding: 32px 18px;
+      font-family: Arial, sans-serif;
+      color: #f8fafc;
+      background: radial-gradient(circle at top, #284b7e, #111827 58%);
+    }
+    main { width: min(900px, 100%); }
+    h1 { margin: 0; font-size: clamp(2rem, 6vw, 4rem); text-align: center; }
+    .intro { margin: 12px 0 36px; text-align: center; color: #cbd5e1; }
+    .games { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 20px; }
+    .game-card {
+      min-height: 230px;
+      display: flex;
+      flex-direction: column;
+      justify-content: flex-end;
+      padding: 24px;
+      border: 1px solid rgba(255,255,255,.25);
+      border-radius: 20px;
+      background: rgba(15, 23, 42, .72);
+      box-shadow: 0 16px 35px rgba(0,0,0,.25);
+    }
+    .game-card:nth-child(1) { background: linear-gradient(145deg, #14532d, #1e293b); }
+    .game-card:nth-child(2) { background: linear-gradient(145deg, #7c2d12, #1e293b); }
+    h2 { margin: 0 0 8px; font-size: 1.7rem; }
+    p { margin: 0 0 22px; color: #dbeafe; line-height: 1.5; }
+    a {
+      display: inline-block;
+      width: fit-content;
+      padding: 11px 18px;
+      border-radius: 10px;
+      background: #facc15;
+      color: #172554;
+      font-weight: bold;
+      text-decoration: none;
+    }
+    a:hover, a:focus-visible { background: #fde047; transform: translateY(-2px); }
+  </style>
 </head>
 <body>
-    <header>
-        <h1>Kho bài tập của lớp</h1>
-        <p>47 vị trí lưu bài tập, nội dung, code và tệp đính kèm.</p>
-    </header>
-    <main>
-        <div class="toolbar">
-            <h2>Danh sách bài tập <span id="slotCount"></span></h2>
-            <span id="saveStatus" role="status">Đang tải dữ liệu...</span>
-        </div>
-        <div id="assignmentList"></div>
-    </main>
-
-    <script>
-        const slotTotal = 47;
-        const records = Array.from({ length: slotTotal }, (_, index) => ({
-            id: index + 1,
-            student: '',
-            title: '',
-            content: '',
-            code: '',
-            fields: [],
-            file: null,
-            fileName: ''
-        }));
-        const fileUrls = new Map();
-        const status = document.getElementById('saveStatus');
-        const list = document.getElementById('assignmentList');
-        document.getElementById('slotCount').textContent = `(${slotTotal} chỗ)`;
-
-        const databasePromise = new Promise((resolve, reject) => {
-            const request = indexedDB.open('class-assignment-storage', 1);
-            request.onupgradeneeded = () => {
-                request.result.createObjectStore('assignments', { keyPath: 'id' });
-            };
-            request.onsuccess = () => resolve(request.result);
-            request.onerror = () => reject(request.error);
-        });
-
-        function createSlot(record) {
-            const section = document.createElement('section');
-            section.className = 'assignment';
-            section.innerHTML = `
-                <div class="assignment-heading">
-                    <span class="slot-number">Vị trí ${String(record.id).padStart(2, '0')}</span>
-                    <button type="button" class="clear-button">Xóa nội dung</button>
-                </div>
-                <div class="fields">
-                    <label>Tên học sinh
-                        <input type="text" data-field="student" placeholder="Nhập tên học sinh">
-                    </label>
-                    <label>Tên bài tập
-                        <input type="text" data-field="title" placeholder="Nhập tên bài tập">
-                    </label>
-                    <label class="wide">Nội dung bài tập
-                        <textarea data-field="content" placeholder="Dán hoặc nhập nội dung bài tập"></textarea>
-                    </label>
-                    <label class="wide">Code
-                        <textarea class="code-input" data-field="code" spellcheck="false" placeholder="Dán code vào đây"></textarea>
-                    </label>
-                    <label class="wide">Tệp đính kèm
-                        <span class="file-row">
-                            <input type="file" class="file-input">
-                            <a class="file-link" hidden></a>
-                        </span>
-                    </label>
-                    <div class="wide custom-data">
-                        <div class="custom-data-heading">
-                            <strong>Dữ liệu bổ sung</strong>
-                            <button type="button" class="add-data-button">+ Thêm trường</button>
-                        </div>
-                        <div class="custom-fields"></div>
-                    </div>
-                </div>`;
-
-            section.querySelectorAll('[data-field]').forEach((input) => {
-                const field = input.dataset.field;
-                input.value = record[field];
-                input.addEventListener('input', () => {
-                    record[field] = input.value;
-                    saveRecord(record);
-                });
-            });
-
-            section.querySelector('.file-input').addEventListener('change', (event) => {
-                const file = event.target.files[0];
-                if (!file) return;
-                record.file = file;
-                record.fileName = file.name;
-                showFile(section, record);
-                saveRecord(record);
-            });
-
-            section.querySelector('.clear-button').addEventListener('click', () => {
-                record.student = '';
-                record.title = '';
-                record.content = '';
-                record.code = '';
-                record.fields = [];
-                record.file = null;
-                record.fileName = '';
-                section.querySelectorAll('[data-field]').forEach((input) => { input.value = ''; });
-                section.querySelector('.file-input').value = '';
-                renderCustomFields(section, record);
-                showFile(section, record);
-                saveRecord(record);
-            });
-
-            section.querySelector('.add-data-button').addEventListener('click', () => {
-                record.fields.push({ name: '', type: 'text', value: '' });
-                renderCustomFields(section, record);
-                saveRecord(record);
-            });
-
-            renderCustomFields(section, record);
-            showFile(section, record);
-            list.appendChild(section);
-        }
-
-        function renderCustomFields(section, record) {
-            const container = section.querySelector('.custom-fields');
-            container.replaceChildren();
-            record.fields.forEach((field, index) => {
-                const row = document.createElement('div');
-                row.className = 'custom-field';
-
-                const nameInput = document.createElement('input');
-                nameInput.type = 'text';
-                nameInput.placeholder = 'Tên trường';
-                nameInput.setAttribute('aria-label', 'Tên trường dữ liệu');
-                nameInput.value = field.name || '';
-                nameInput.addEventListener('input', () => {
-                    field.name = nameInput.value;
-                    saveRecord(record);
-                });
-
-                const typeSelect = document.createElement('select');
-                typeSelect.setAttribute('aria-label', 'Kiểu dữ liệu');
-                [
-                    ['text', 'Văn bản'],
-                    ['textarea', 'Đoạn dài'],
-                    ['number', 'Số'],
-                    ['date', 'Ngày'],
-                    ['time', 'Giờ'],
-                    ['email', 'Email'],
-                    ['url', 'Liên kết'],
-                    ['checkbox', 'Có / Không']
-                ].forEach(([value, label]) => {
-                    const option = document.createElement('option');
-                    option.value = value;
-                    option.textContent = label;
-                    typeSelect.appendChild(option);
-                });
-                typeSelect.value = field.type || 'text';
-
-                const valueContainer = document.createElement('div');
-                valueContainer.className = 'custom-value';
-                const valueInput = field.type === 'textarea'
-                    ? document.createElement('textarea')
-                    : document.createElement('input');
-                if (field.type !== 'textarea') valueInput.type = field.type || 'text';
-                valueInput.setAttribute('aria-label', 'Giá trị');
-                if (field.type === 'checkbox') {
-                    valueInput.checked = Boolean(field.value);
-                    valueInput.addEventListener('change', () => {
-                        field.value = valueInput.checked;
-                        saveRecord(record);
-                    });
-                } else {
-                    valueInput.placeholder = 'Nhập giá trị';
-                    valueInput.value = field.value ?? '';
-                    valueInput.addEventListener('input', () => {
-                        field.value = valueInput.value;
-                        saveRecord(record);
-                    });
-                }
-                valueContainer.appendChild(valueInput);
-
-                typeSelect.addEventListener('change', () => {
-                    field.type = typeSelect.value;
-                    field.value = field.type === 'checkbox' ? false : '';
-                    renderCustomFields(section, record);
-                    saveRecord(record);
-                });
-
-                const removeButton = document.createElement('button');
-                removeButton.type = 'button';
-                removeButton.textContent = 'Xóa';
-                removeButton.setAttribute('aria-label', 'Xóa trường dữ liệu');
-                removeButton.addEventListener('click', () => {
-                    record.fields.splice(index, 1);
-                    renderCustomFields(section, record);
-                    saveRecord(record);
-                });
-
-                row.append(nameInput, typeSelect, valueContainer, removeButton);
-                container.appendChild(row);
-            });
-        }
-
-        function showFile(section, record) {
-            const link = section.querySelector('.file-link');
-            if (fileUrls.has(record.id)) URL.revokeObjectURL(fileUrls.get(record.id));
-            link.hidden = !record.file;
-            if (record.file) {
-                const url = URL.createObjectURL(record.file);
-                fileUrls.set(record.id, url);
-                link.href = url;
-                link.download = record.fileName;
-                link.textContent = `Tải tệp: ${record.fileName}`;
-            } else {
-                fileUrls.delete(record.id);
-                link.removeAttribute('href');
-                link.textContent = '';
-            }
-        }
-
-        async function saveRecord(record) {
-            status.textContent = 'Đang lưu...';
-            try {
-                const database = await databasePromise;
-                const transaction = database.transaction('assignments', 'readwrite');
-                transaction.objectStore('assignments').put(record);
-                transaction.oncomplete = () => { status.textContent = 'Đã lưu trên trình duyệt này'; };
-                transaction.onerror = () => { status.textContent = 'Không lưu được dữ liệu'; };
-            } catch (error) {
-                status.textContent = 'Trình duyệt không hỗ trợ lưu dữ liệu';
-            }
-        }
-
-        async function loadRecords() {
-            for (const record of records) createSlot(record);
-            try {
-                const database = await databasePromise;
-                const transaction = database.transaction('assignments', 'readonly');
-                const request = transaction.objectStore('assignments').getAll();
-                request.onsuccess = () => {
-                    request.result.forEach((saved) => {
-                        const record = records[saved.id - 1];
-                        if (!record) return;
-                        Object.assign(record, saved);
-                        const section = list.children[saved.id - 1];
-                        section.querySelectorAll('[data-field]').forEach((input) => {
-                            input.value = record[input.dataset.field] || '';
-                        });
-                        renderCustomFields(section, record);
-                        showFile(section, record);
-                    });
-                    status.textContent = 'Đã tải dữ liệu đã lưu';
-                };
-                request.onerror = () => { status.textContent = 'Không đọc được dữ liệu đã lưu'; };
-            } catch (error) {
-                status.textContent = 'Trình duyệt không hỗ trợ lưu dữ liệu';
-            }
-        }
-
-        loadRecords();
-    </script>
-
+  <main>
+    <h1>My HTML Game Arcade</h1>
+    <p class="intro">Choose a game and start playing.</p>
+    <section class="games" aria-label="Available games">
+      <article class="game-card">
+        <h2>Stick Battle</h2>
+        <p>Build your army, mine gold, and destroy the enemy statue.</p>
+        <a href="Stick-Battle.html">Play Stick Battle</a>
+      </article>
+      <article class="game-card">
+        <h2>Flappy Bird</h2>
+        <p>Fly through the pipes and try to beat your high score.</p>
+        <a href="Flappy-Bird.html">Play Flappy Bird</a>
+      </article>
+      <article class="game-card">
+        <h2>control game</h2>
+        <p>Fly through the pipes and try to beat your high score.</p>
+        <a href="control-game.html">control game</a>
+      </article>
+      <article class="game-card">
+        <h2>Plants vs. Zombies</h2>
+        <p>Defend your garden against waves of zombies.</p>
+        <a href="plantsvszombies.html">Play Plants vs. Zombies</a>
+      </article>
+      <article class="game-card">
+        <h2>Hành Trình Vương Quốc 3D</h2>
+        <p>Khám phá khu rừng 3D, nhận nhiệm vụ và đánh bại các slime.</p>
+        <a href="rpg-adventure.html">Chơi game nhập vai 3D</a>
+      </article>
+    </section>
+  </main>
 </body>
 </html>
